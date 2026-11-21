@@ -1,183 +1,52 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { supabase } from './supabase'
 import { MAX_VIDEO_MB } from './config'
-import { compressImage, dayKey, dayLabel, EMOJIS, initials, lastSeenText, playPop, signedUrl, timeOf } from './utils'
-import { Back, Ban, Clip, Close, Dots, Down, Download, Play, Send, Smile, Ticks } from './icons'
+import { compressImage, dayKey, dayLabel, EMOJIS, initials, lastSeenText, signedUrl } from './utils'
+import { Back, Clip, Close, Dots, Down, Download, Send, Smile } from './icons'
+import Bubble, { previewOf } from './Bubble'
 
-const PAGE = 60
-
-const byTime = (a, b) => new Date(a.created_at) - new Date(b.created_at)
-
-function mergeMessages(prev, incoming, myId) {
-  const map = new Map(prev.map((m) => [m.id, m]))
-  for (const m of incoming) {
-    const old = map.get(m.id)
-    // keep the local preview of a photo we just sent, drop the "sending" state
-    map.set(m.id, old ? { ...m, _localUrl: old._localUrl } : m)
-  }
-  return [...map.values()].filter((m) => !(m.deleted_for || []).includes(myId)).sort(byTime)
-}
-
-export default function Chat({ session }) {
-  const myId = session.user.id
-  const [me, setMe] = useState(null)
-  const [other, setOther] = useState(null)
-  const [messages, setMessages] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [hasMore, setHasMore] = useState(false)
+// One conversation. Shared data (messages, presence, prefs) lives in Home.
+export default function Chat({
+  me, friend, messages, setMessages, hasMore, loadOlder, online, typing, sendTyping,
+  visible, pref, updatePref, onBack, onChatMenu, flash, mergeMessages,
+}) {
+  const myId = me.id
+  const fid = friend.id
   const [text, setText] = useState('')
   const [replyTo, setReplyTo] = useState(null)
   const [showEmoji, setShowEmoji] = useState(false)
-  const [otherOnline, setOtherOnline] = useState(false)
-  const [otherTyping, setOtherTyping] = useState(false)
-  const [visible, setVisible] = useState(document.visibilityState === 'visible')
-  const [menu, setMenu] = useState(null) // message whose options are open
+  const [menu, setMenu] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
-  const [picked, setPicked] = useState(null) // { file, url, kind }
+  const [picked, setPicked] = useState(null)
   const [caption, setCaption] = useState('')
-  const [viewer, setViewer] = useState(null) // { url, kind, name }
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [viewer, setViewer] = useState(null)
   const [newCount, setNewCount] = useState(0)
-  const [toast, setToast] = useState('')
   const [showDown, setShowDown] = useState(false)
 
   const listRef = useRef(null)
   const atBottom = useRef(true)
-  const stickNext = useRef(true)
   const prependFrom = useRef(null)
-  const roomRef = useRef(null)
-  const typingTimer = useRef(null)
-  const lastTypingSent = useRef(0)
+  const lastId = useRef(null)
   const marking = useRef(false)
-  const unread = useRef(0)
   const fileInput = useRef(null)
   const textRef = useRef(null)
-  const meRef = useRef(null)
-  meRef.current = me
 
-  const flash = (t) => { setToast(t); setTimeout(() => setToast(''), 2500) }
-
-  // ---------- initial load ----------
+  // ---------- read receipts + unread counter ----------
   useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      const { data: profiles } = await supabase.from('profiles').select('*')
-      if (cancelled) return
-      setMe(profiles?.find((p) => p.id === myId) || null)
-      setOther(profiles?.find((p) => p.id !== myId) || null)
-      const { data } = await supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(PAGE)
-      if (cancelled) return
-      stickNext.current = true
-      setMessages(mergeMessages([], data || [], myId))
-      setHasMore((data || []).length === PAGE)
-      setLoading(false)
-    })()
-    return () => { cancelled = true }
-  }, [myId])
-
-  // ---------- realtime: new / changed messages and profile changes ----------
-  useEffect(() => {
-    const ch = supabase
-      .channel('db-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, ({ eventType, new: m }) => {
-        if (eventType === 'DELETE' || !m?.id) return
-        if (eventType === 'INSERT' && m.sender_id !== myId) {
-          if (atBottom.current) stickNext.current = true
-          else setNewCount((n) => n + 1)
-          if (document.visibilityState !== 'visible') {
-            unread.current += 1
-            document.title = `(${unread.current}) Chit Chat`
-            playPop()
-          }
-        }
-        setMessages((prev) => mergeMessages(prev, [m], myId))
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, ({ new: p }) => {
-        if (p.id === myId) setMe(p)
-        else setOther(p)
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(ch) }
-  }, [myId])
-
-  // ---------- presence (online) + typing ----------
-  useEffect(() => {
-    if (!other) return
-    const ch = supabase.channel('room', { config: { presence: { key: myId } } })
-    roomRef.current = ch
-    ch.on('presence', { event: 'sync' }, () => {
-      setOtherOnline(Object.keys(ch.presenceState()).includes(other.id))
-    })
-      .on('broadcast', { event: 'typing' }, ({ payload }) => {
-        if (payload?.from === myId) return
-        setOtherTyping(true)
-        clearTimeout(typingTimer.current)
-        typingTimer.current = setTimeout(() => setOtherTyping(false), 3000)
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED' && document.visibilityState === 'visible') ch.track({ at: Date.now() })
-      })
-    return () => { supabase.removeChannel(ch); roomRef.current = null }
-  }, [myId, other?.id])
-
-  // ---------- visibility: online/offline, last seen, catch up ----------
-  const touchLastSeen = useCallback(() => {
-    supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', myId).then(() => {})
-  }, [myId])
-
-  const catchUp = useCallback(async () => {
-    const { data } = await supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(PAGE)
-    if (data) setMessages((prev) => mergeMessages(prev, data, myId))
-  }, [myId])
-
-  useEffect(() => {
-    const onVis = () => {
-      const v = document.visibilityState === 'visible'
-      setVisible(v)
-      touchLastSeen()
-      if (v) {
-        unread.current = 0
-        document.title = 'Chit Chat'
-        roomRef.current?.track({ at: Date.now() })
-        catchUp()
-      } else {
-        roomRef.current?.untrack()
-      }
-    }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('pagehide', touchLastSeen)
-    touchLastSeen()
-    const beat = setInterval(() => document.visibilityState === 'visible' && touchLastSeen(), 60000)
-    return () => {
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('pagehide', touchLastSeen)
-      clearInterval(beat)
-    }
-  }, [touchLastSeen, catchUp])
-
-  // ---------- ticks: mark incoming messages delivered / read ----------
-  useEffect(() => {
-    if (!me || marking.current) return
-    const now = new Date().toISOString()
-    const needDelivered = messages.some((m) => m.receiver_id === myId && !m.delivered_at)
-    const needRead = visible && me.read_receipts && messages.some((m) => m.receiver_id === myId && !m.read_at && !m.deleted_for_everyone)
-    if (!needDelivered && !needRead) return
+    if (!visible || marking.current) return
+    const incoming = messages.filter((m) => m.sender_id === fid)
+    const newest = incoming[incoming.length - 1]
+    if (newest && (!pref?.last_read_at || new Date(newest.created_at) > new Date(pref.last_read_at)))
+      updatePref(fid, { last_read_at: new Date().toISOString() })
+    if (!me.read_receipts || !incoming.some((m) => !m.read_at && !m.deleted_for_everyone)) return
     marking.current = true
-    ;(async () => {
-      if (needDelivered)
-        await supabase.from('messages').update({ delivered_at: now }).eq('receiver_id', myId).is('delivered_at', null)
-      if (needRead)
-        await supabase.from('messages').update({ read_at: now }).eq('receiver_id', myId).is('read_at', null)
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.receiver_id === myId
-            ? { ...m, delivered_at: m.delivered_at || now, read_at: needRead ? m.read_at || now : m.read_at }
-            : m
-        )
-      )
-      marking.current = false
-    })()
-  }, [messages, visible, me, myId])
+    const now = new Date().toISOString()
+    supabase.from('messages').update({ read_at: now }).eq('receiver_id', myId).eq('sender_id', fid).is('read_at', null)
+      .then(() => {
+        setMessages((prev) => prev.map((m) => (m.sender_id === fid && m.receiver_id === myId && !m.read_at ? { ...m, read_at: now, delivered_at: m.delivered_at || now } : m)))
+        marking.current = false
+      })
+  }, [messages, visible, me.read_receipts, fid, myId, pref?.last_read_at])
 
   // ---------- scrolling ----------
   useLayoutEffect(() => {
@@ -186,11 +55,15 @@ export default function Chat({ session }) {
     if (prependFrom.current != null) {
       el.scrollTop += el.scrollHeight - prependFrom.current
       prependFrom.current = null
-    } else if (stickNext.current) {
-      el.scrollTop = el.scrollHeight
-      stickNext.current = false
+      return
     }
-  }, [messages, loading])
+    const last = messages[messages.length - 1]
+    if (!last || last.id === lastId.current) return
+    const first = lastId.current === null
+    lastId.current = last.id
+    if (first || last.sender_id === myId || atBottom.current) el.scrollTop = el.scrollHeight
+    else setNewCount((n) => n + 1)
+  }, [messages, myId])
 
   const scrollToBottom = (smooth = true) => {
     const el = listRef.current
@@ -198,62 +71,40 @@ export default function Chat({ session }) {
     setNewCount(0)
   }
 
-  const loadOlder = async () => {
-    if (!hasMore || !messages.length || prependFrom.current != null) return
-    prependFrom.current = listRef.current.scrollHeight
-    const { data } = await supabase
-      .from('messages')
-      .select('*')
-      .lt('created_at', messages[0].created_at)
-      .order('created_at', { ascending: false })
-      .limit(PAGE)
-    setHasMore((data || []).length === PAGE)
-    if (data?.length) setMessages((prev) => mergeMessages(prev, data, myId))
-    else prependFrom.current = null
-  }
-
-  const onScroll = (e) => {
+  const onScroll = async (e) => {
     const el = e.currentTarget
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
     if (atBottom.current && newCount) setNewCount(0)
     if (showDown === atBottom.current) setShowDown(!atBottom.current)
-    if (el.scrollTop < 60) loadOlder()
+    if (el.scrollTop < 60 && hasMore && messages.length && prependFrom.current == null) {
+      prependFrom.current = el.scrollHeight
+      const got = await loadOlder(fid, messages[0].created_at)
+      if (!got) prependFrom.current = null
+    }
   }
 
   const onMediaLoad = () => { if (atBottom.current) scrollToBottom(false) }
 
   // ---------- sending ----------
-  const sendTyping = () => {
-    const now = Date.now()
-    if (now - lastTypingSent.current < 2000) return
-    lastTypingSent.current = now
-    roomRef.current?.send({ type: 'broadcast', event: 'typing', payload: { from: myId } })
+  function addOptimistic(row, local = {}) {
+    atBottom.current = true
+    setMessages((prev) => [...prev, { ...row, created_at: new Date().toISOString(), delivered_at: null, read_at: null, deleted_for: [], deleted_for_everyone: false, _status: 'sending', ...local }])
   }
-
-  async function insertMessage(row, local = {}) {
-    const optimistic = { ...row, created_at: new Date().toISOString(), delivered_at: null, read_at: null, deleted_for: [], deleted_for_everyone: false, _status: 'sending', ...local }
-    stickNext.current = true
-    setMessages((prev) => [...prev, optimistic])
-    return optimistic
-  }
-
-  function markFailed(id) {
-    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, _status: 'failed' } : m)))
-  }
+  const markFailed = (id) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, _status: 'failed' } : m)))
 
   async function sendText() {
     const content = text.trim()
-    if (!content || !other) return
-    const row = { id: crypto.randomUUID(), sender_id: myId, receiver_id: other.id, content, reply_to: replyTo?.id || null }
+    if (!content) return
+    const row = { id: crypto.randomUUID(), sender_id: myId, receiver_id: fid, content, reply_to: replyTo?.id || null }
     setText('')
     if (textRef.current) textRef.current.style.height = 'auto'
     setReplyTo(null)
     setShowEmoji(false)
     textRef.current?.focus()
-    await insertMessage(row)
+    addOptimistic(row)
     const { data, error } = await supabase.from('messages').insert(row).select().single()
     if (error) return markFailed(row.id)
-    setMessages((prev) => mergeMessages(prev, [data], myId))
+    setMessages((prev) => mergeMessages(prev, [data]))
   }
 
   function pickFile(e) {
@@ -268,16 +119,16 @@ export default function Chat({ session }) {
   }
 
   async function sendMedia() {
-    if (!picked || !other) return
+    if (!picked) return
     const { kind, url } = picked
     let file = picked.file
     setPicked(null)
     const id = crypto.randomUUID()
-    const row = { id, sender_id: myId, receiver_id: other.id, content: caption.trim() || null, media_type: kind, reply_to: replyTo?.id || null }
+    const row = { id, sender_id: myId, receiver_id: fid, content: caption.trim() || null, media_type: kind, reply_to: replyTo?.id || null }
     setCaption('')
     setText('')
     setReplyTo(null)
-    await insertMessage(row, { _localUrl: url })
+    addOptimistic(row, { _localUrl: url })
     if (kind === 'image') file = await compressImage(file)
     const ext = (file.name.split('.').pop() || (kind === 'video' ? 'mp4' : 'jpg')).toLowerCase().slice(0, 5)
     const path = `${myId}/${id}.${ext}`
@@ -285,27 +136,23 @@ export default function Chat({ session }) {
     if (up.error) { flash('Upload failed: ' + up.error.message); return markFailed(id) }
     const { data, error } = await supabase.from('messages').insert({ ...row, media_path: path }).select().single()
     if (error) return markFailed(id)
-    setMessages((prev) => mergeMessages(prev, [data], myId))
+    setMessages((prev) => mergeMessages(prev, [data]))
   }
 
-  async function retry(m) {
+  function retry(m) {
     setMessages((prev) => prev.filter((x) => x.id !== m.id))
-    if (!m.media_type) {
-      setText(m.content || '')
-      textRef.current?.focus()
-    } else flash('Please choose the file again')
+    if (!m.media_type) { setText(m.content || ''); textRef.current?.focus() } else flash('Please choose the file again')
   }
 
   // ---------- deleting ----------
   async function deleteForMe(m) {
     setConfirmDelete(null)
     setMessages((prev) => prev.filter((x) => x.id !== m.id))
-    if (m._status) return // never reached the server
+    if (m._status) return
     const deleted_for = [...new Set([...(m.deleted_for || []), myId])]
     const { error } = await supabase.from('messages').update({ deleted_for }).eq('id', m.id)
     if (error) return flash('Could not delete')
-    // both people removed it → free the storage space
-    if (m.media_path && other && deleted_for.includes(other.id)) supabase.storage.from('media').remove([m.media_path])
+    if (m.media_path && deleted_for.includes(fid)) supabase.storage.from('media').remove([m.media_path])
   }
 
   async function deleteForEveryone(m) {
@@ -317,30 +164,16 @@ export default function Chat({ session }) {
     if (error) flash('Could not delete for everyone')
   }
 
-  // ---------- settings ----------
-  async function updateMe(patch) {
-    setMe((p) => ({ ...p, ...patch }))
-    await supabase.from('profiles').update(patch).eq('id', myId)
-  }
-
   // ---------- helpers ----------
   const status = (m) => {
     if (m._status) return m._status
-    if (m.read_at && me?.read_receipts) return 'read'
+    if (m.read_at && me.read_receipts) return 'read'
     if (m.delivered_at) return 'delivered'
     return 'sent'
   }
-
-  const headerStatus = () => {
-    if (!other) return ''
-    if (otherTyping) return 'typing…'
-    if (otherOnline) return 'online'
-    if (other.hide_last_seen || me?.hide_last_seen) return ''
-    return lastSeenText(other.last_seen)
-  }
-
+  const headerStatus = typing ? 'typing…' : online ? 'online' : friend.hide_last_seen || me.hide_last_seen ? '' : lastSeenText(friend.last_seen)
   const findMsg = (id) => messages.find((m) => m.id === id)
-  const nameOf = (id) => (id === myId ? 'You' : other?.name || '')
+  const nameOf = (id) => (id === myId ? 'You' : friend.name)
 
   const jumpTo = (id) => {
     const el = document.getElementById('m-' + id)
@@ -359,35 +192,24 @@ export default function Chat({ session }) {
     }
   }
 
-  if (loading || !me) return <div className="center-screen"><div className="spinner" /></div>
-
-  if (!other)
-    return (
-      <div className="center-screen">
-        <p>Your friend's account isn't set up yet.</p>
-        <button className="primary" onClick={() => supabase.auth.signOut()}>Log out</button>
-      </div>
-    )
-
   let prevDay = null
   let prevSender = null
 
   return (
-    <div className="app">
+    <div className="chat">
       <header className="chat-header">
-        <span className="avatar">{initials(other.name)}</span>
+        <button className="icon-btn back-btn" onClick={onBack} aria-label="Back to chats"><Back /></button>
+        <span className="avatar">{initials(friend.name)}</span>
         <div className="who-info">
-          <div className="who-name">{other.name}</div>
-          <div className={'who-status' + (otherTyping ? ' typing' : '')}>{headerStatus()}</div>
+          <div className="who-name">{friend.name} {pref?.locked && <span title="Locked chat">🔒</span>}</div>
+          <div className={'who-status' + (typing ? ' typing' : '')}>{headerStatus}</div>
         </div>
-        <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings"><Dots /></button>
+        <button className="icon-btn" onClick={onChatMenu} aria-label="Chat options"><Dots /></button>
       </header>
 
       <main className="messages" ref={listRef} onScroll={onScroll} onClick={() => setShowEmoji(false)}>
-        {hasMore && <div className="load-more">Loading older messages…</div>}
-        {!messages.length && (
-          <div className="empty-note">🔒 This is your private chat with {other.name}. Say hi! 👋</div>
-        )}
+        {hasMore && <div className="load-more">Scroll up for older messages</div>}
+        <div className="empty-note">🔒 Only you and {friend.name} can read this chat.</div>
         {messages.map((m) => {
           const k = dayKey(m.created_at)
           const showDay = k !== prevDay
@@ -395,6 +217,7 @@ export default function Chat({ session }) {
           const first = showDay || prevSender !== m.sender_id
           prevDay = k
           prevSender = m.sender_id
+          const reply = m.reply_to ? findMsg(m.reply_to) : null
           return (
             <Fragment key={m.id}>
               {showDay && <div className="day"><span>{dayLabel(m.created_at)}</span></div>}
@@ -403,8 +226,8 @@ export default function Chat({ session }) {
                 mine={mine}
                 first={first}
                 status={mine ? status(m) : null}
-                reply={m.reply_to ? findMsg(m.reply_to) : null}
-                replyName={m.reply_to ? nameOf(findMsg(m.reply_to)?.sender_id) : ''}
+                reply={reply}
+                replyName={reply ? nameOf(reply.sender_id) : ''}
                 onMenu={() => setMenu(m)}
                 onOpen={() => openViewer(m)}
                 onJump={() => jumpTo(m.reply_to)}
@@ -416,12 +239,12 @@ export default function Chat({ session }) {
         })}
       </main>
 
-      {newCount > 0 || showDown ? (
+      {(newCount > 0 || showDown) && (
         <button className="to-bottom" onClick={() => scrollToBottom()} aria-label="Scroll to latest">
           {newCount > 0 && <span className="badge">{newCount}</span>}
           <Down />
         </button>
-      ) : null}
+      )}
 
       {showEmoji && (
         <div className="emoji-panel">
@@ -436,7 +259,7 @@ export default function Chat({ session }) {
           <div className="reply-bar">
             <div className="quote">
               <b>{nameOf(replyTo.sender_id)}</b>
-              <span>{replyTo.media_type ? (replyTo.media_type === 'image' ? '📷 Photo' : '🎥 Video') : ''} {replyTo.content}</span>
+              <span>{previewOf(replyTo)}</span>
             </div>
             <button className="icon-btn dark" onClick={() => setReplyTo(null)} aria-label="Cancel reply"><Close /></button>
           </div>
@@ -449,7 +272,12 @@ export default function Chat({ session }) {
               rows={1}
               placeholder="Message"
               value={text}
-              onChange={(e) => { setText(e.target.value); sendTyping(); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 130) + 'px' }}
+              onChange={(e) => {
+                setText(e.target.value)
+                sendTyping(fid)
+                e.target.style.height = 'auto'
+                e.target.style.height = Math.min(e.target.scrollHeight, 130) + 'px'
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); sendText() }
               }}
@@ -461,7 +289,6 @@ export default function Chat({ session }) {
         </div>
       </footer>
 
-      {/* message options */}
       {menu && (
         <div className="overlay" onClick={() => setMenu(null)}>
           <div className="sheet" onClick={(e) => e.stopPropagation()}>
@@ -494,7 +321,6 @@ export default function Chat({ session }) {
         </div>
       )}
 
-      {/* photo / video preview before sending */}
       {picked && (
         <div className="preview">
           <div className="preview-top">
@@ -510,7 +336,6 @@ export default function Chat({ session }) {
         </div>
       )}
 
-      {/* full screen viewer */}
       {viewer && (
         <div className="preview" onClick={() => setViewer(null)}>
           <div className="preview-top" onClick={(e) => e.stopPropagation()}>
@@ -522,158 +347,6 @@ export default function Chat({ session }) {
           </div>
         </div>
       )}
-
-      {settingsOpen && <Settings me={me} onClose={() => setSettingsOpen(false)} onChange={updateMe} flash={flash} />}
-
-      {toast && <div className="toast">{toast}</div>}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-
-function Bubble({ m, mine, first, status, reply, replyName, onMenu, onOpen, onJump, onRetry, onMediaLoad }) {
-  const press = useRef(null)
-  const startPress = () => { press.current = setTimeout(() => { press.current = 'fired'; navigator.vibrate?.(20); onMenu() }, 450) }
-  const endPress = () => { if (press.current !== 'fired') clearTimeout(press.current); }
-
-  const handlers = {
-    onContextMenu: (e) => { e.preventDefault(); onMenu() },
-    onTouchStart: startPress,
-    onTouchEnd: endPress,
-    onTouchMove: endPress,
-    onClickCapture: (e) => { if (press.current === 'fired') { e.stopPropagation(); press.current = null } },
-  }
-
-  const meta = (
-    <span className="meta">
-      {timeOf(m.created_at)}
-      {mine && !m.deleted_for_everyone && <Ticks status={status} />}
-    </span>
-  )
-
-  if (m.deleted_for_everyone) {
-    return (
-      <div id={'m-' + m.id} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`}>
-        <div className="bubble deleted" {...handlers}>
-          <Ban /> <i>{mine ? 'You deleted this message' : 'This message was deleted'}</i>
-          {meta}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div id={'m-' + m.id} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`}>
-      <div className={'bubble' + (m.media_type ? ' has-media' : '')} {...handlers}>
-        <button className="bubble-menu" onClick={(e) => { e.stopPropagation(); onMenu() }} aria-label="Message options"><Down /></button>
-        {m.reply_to && (
-          <div className="quote in-bubble" onClick={onJump}>
-            <b>{reply ? replyName : ''}</b>
-            <span>
-              {!reply ? 'Message' : reply.deleted_for_everyone ? 'This message was deleted' : `${reply.media_type === 'image' ? '📷 Photo ' : reply.media_type === 'video' ? '🎥 Video ' : ''}${reply.content || ''}`}
-            </span>
-          </div>
-        )}
-        {m.media_type && <Media m={m} onOpen={onOpen} onLoad={onMediaLoad} />}
-        {m.content && <span className="text"><Linkify text={m.content} /></span>}
-        {meta}
-        {status === 'failed' && (
-          <button className="retry" onClick={onRetry}>Not sent. Tap to retry</button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function Media({ m, onOpen, onLoad }) {
-  const [url, setUrl] = useState(m._localUrl || null)
-  const [err, setErr] = useState(false)
-  useEffect(() => {
-    if (m._localUrl) return setUrl(m._localUrl)
-    if (!m.media_path) return
-    let alive = true
-    signedUrl(m.media_path).then((u) => alive && setUrl(u)).catch(() => alive && setErr(true))
-    return () => { alive = false }
-  }, [m.media_path, m._localUrl])
-
-  const uploading = m._status === 'sending'
-  return (
-    <div className="media" onClick={() => !uploading && url && onOpen()}>
-      {err ? (
-        <div className="media-missing">Media not available</div>
-      ) : !url ? (
-        <div className="media-loading"><div className="spinner small" /></div>
-      ) : m.media_type === 'image' ? (
-        <img src={url} alt="" onLoad={onLoad} />
-      ) : (
-        <>
-          <video src={url + (m._localUrl ? '' : '#t=0.1')} preload="metadata" muted playsInline onLoadedData={onLoad} />
-          {!uploading && <span className="play"><Play /></span>}
-        </>
-      )}
-      {uploading && <div className="media-uploading"><div className="spinner" /></div>}
-    </div>
-  )
-}
-
-function Linkify({ text }) {
-  const parts = text.split(/(https?:\/\/[^\s]+)/g)
-  return parts.map((p, i) =>
-    /^https?:\/\//.test(p) ? <a key={i} href={p} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>{p}</a> : <Fragment key={i}>{p}</Fragment>
-  )
-}
-
-function Settings({ me, onClose, onChange, flash }) {
-  const [pin, setPin] = useState('')
-  const [saving, setSaving] = useState(false)
-
-  async function changePin() {
-    if (pin.length < 6) return flash('Password must be at least 6 characters')
-    setSaving(true)
-    const { error } = await supabase.auth.updateUser({ password: pin })
-    setSaving(false)
-    if (error) return flash(error.message)
-    setPin('')
-    flash('Password changed ✔')
-  }
-
-  return (
-    <div className="overlay" onClick={onClose}>
-      <aside className="settings" onClick={(e) => e.stopPropagation()}>
-        <header className="chat-header">
-          <button className="icon-btn" onClick={onClose} aria-label="Back"><Back /></button>
-          <div className="who-name">Settings</div>
-        </header>
-        <div className="settings-me">
-          <span className="avatar big">{initials(me.name)}</span>
-          <div><b>{me.name}</b><small>Logged in</small></div>
-        </div>
-
-        <h3>Privacy</h3>
-        <label className="setting">
-          <div>
-            <b>Hide last seen</b>
-            <small>If you hide yours, you won't see theirs either.</small>
-          </div>
-          <input type="checkbox" className="switch" checked={me.hide_last_seen} onChange={(e) => onChange({ hide_last_seen: e.target.checked })} />
-        </label>
-        <label className="setting">
-          <div>
-            <b>Read receipts (blue ticks)</b>
-            <small>If turned off, you won't send or see blue ticks.</small>
-          </div>
-          <input type="checkbox" className="switch" checked={me.read_receipts} onChange={(e) => onChange({ read_receipts: e.target.checked })} />
-        </label>
-
-        <h3>Security</h3>
-        <div className="setting">
-          <input className="pin-field" type="password" autoCapitalize="none" placeholder="New password (min 6)" value={pin} onChange={(e) => setPin(e.target.value)} />
-          <button className="primary small" onClick={changePin} disabled={saving}>Change password</button>
-        </div>
-
-        <button className="logout" onClick={() => supabase.auth.signOut()}>Log out</button>
-      </aside>
     </div>
   )
 }

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabase'
 import { SUPABASE_ANON_KEY } from './config'
 import Login from './Login'
-import Chat from './Chat'
+import Home from './Home'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
@@ -22,5 +22,5 @@ export default function App() {
   }
   if (session === undefined) return <div className="center-screen"><div className="spinner" /></div>
   if (!session) return <Login />
-  return <Chat session={session} />
+  return <Home session={session} />
 }
