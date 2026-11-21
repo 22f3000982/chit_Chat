@@ -2,9 +2,9 @@
 
 A private, WhatsApp-style chat for two people: **Sneha** and **Axon**.
 
-Features: name + 6-digit PIN login · real-time messages · ✓ sent / ✓✓ delivered / blue ✓✓ read ·
+Features: name + password login · real-time messages · ✓ sent / ✓✓ delivered / blue ✓✓ read ·
 online, typing… and last seen · hide last seen · turn off read receipts · photos & videos (up to 50 MB) ·
-reply to a message · delete for me / delete for everyone (also removes the file) · emoji · change PIN ·
+reply to a message · delete for me / delete for everyone (also removes the file) · emoji · change password ·
 installable on the phone home screen.
 
 Built with React + Vite, Supabase (login, database, realtime, storage) and hosted on Vercel.
@@ -13,11 +13,9 @@ Built with React + Vite, Supabase (login, database, realtime, storage) and hoste
 
 ### 1. Supabase
 1. **SQL Editor → New query** → paste everything from [`supabase/setup.sql`](supabase/setup.sql) → **Run**.
-2. **Authentication → Users → Add user → Create new user**, twice (tick *Auto Confirm User*):
-   | Email | Password |
-   |---|---|
-   | `sneha@chitchat.app` | Sneha's 6-digit PIN |
-   | `axon@chitchat.app` | Axon's 6-digit PIN |
+2. **SQL Editor → New query** → paste [`supabase/create_users.sql`](supabase/create_users.sql), put the real
+   passwords in place of `CHANGE_ME_SNEHA` / `CHANGE_ME_AXON` → **Run**. This creates both logins
+   (to change a password later, just run it again with the new one).
 3. **Authentication → Sign In / Providers → Email**: turn **off** "Allow new users to sign up" so nobody else can make an account.
 
 ### 2. Vercel

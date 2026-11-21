@@ -629,13 +629,13 @@ function Settings({ me, onClose, onChange, flash }) {
   const [saving, setSaving] = useState(false)
 
   async function changePin() {
-    if (!/^\d{6}$/.test(pin)) return flash('PIN must be 6 digits')
+    if (pin.length < 6) return flash('Password must be at least 6 characters')
     setSaving(true)
     const { error } = await supabase.auth.updateUser({ password: pin })
     setSaving(false)
     if (error) return flash(error.message)
     setPin('')
-    flash('PIN changed ✔')
+    flash('Password changed ✔')
   }
 
   return (
@@ -668,8 +668,8 @@ function Settings({ me, onClose, onChange, flash }) {
 
         <h3>Security</h3>
         <div className="setting">
-          <input className="pin-field" type="password" inputMode="numeric" maxLength={6} placeholder="New 6-digit PIN" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} />
-          <button className="primary small" onClick={changePin} disabled={saving}>Change PIN</button>
+          <input className="pin-field" type="password" autoCapitalize="none" placeholder="New password (min 6)" value={pin} onChange={(e) => setPin(e.target.value)} />
+          <button className="primary small" onClick={changePin} disabled={saving}>Change password</button>
         </div>
 
         <button className="logout" onClick={() => supabase.auth.signOut()}>Log out</button>
