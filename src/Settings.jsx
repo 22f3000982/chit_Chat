@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { supabase } from './supabase'
+import { logout, needsHomeScreen } from './push'
 import { initials, compressImage } from './utils'
 import { Back } from './icons'
 import { setLocal, sha256, useLocal, WALL_COLORS, wallpaperStyle } from './local'
 
-export default function Settings({ me, onClose, onChange, flash, hasLock, onChangeLockCode }) {
+export default function Settings({ me, onClose, onChange, flash, hasLock, onChangeLockCode, push, onPushOn, onPushOff }) {
   const [pass, setPass] = useState('')
   const [saving, setSaving] = useState(false)
   const [theme, setTheme] = useLocal('theme', 'light')
@@ -34,6 +35,29 @@ export default function Settings({ me, onClose, onChange, flash, hasLock, onChan
         <span className="avatar big">{initials(me.name)}</span>
         <div><b>{me.name}</b><small>Logged in</small></div>
       </div>
+
+      <h3>Notifications</h3>
+      <label className="setting">
+        <div>
+          <b>Message notifications</b>
+          <small>
+            {push === 'unsupported'
+              ? 'This browser does not support notifications.'
+              : needsHomeScreen()
+                ? 'On iPhone: Share → Add to Home Screen, then open the app from there to turn this on.'
+                : push === 'blocked'
+                  ? 'Blocked. Allow notifications for this site in your browser settings.'
+                  : 'Get a notification on this device when a message arrives.'}
+          </small>
+        </div>
+        <input
+          type="checkbox"
+          className="switch"
+          checked={push === 'on'}
+          disabled={push === 'unsupported' || push === 'blocked' || needsHomeScreen()}
+          onChange={(e) => (e.target.checked ? onPushOn() : onPushOff())}
+        />
+      </label>
 
       <h3>Appearance</h3>
       <div className="setting">
@@ -114,7 +138,7 @@ export default function Settings({ me, onClose, onChange, flash, hasLock, onChan
         <button className="primary small" onClick={changePassword} disabled={saving}>Change password</button>
       </div>
 
-      <button className="logout" onClick={() => supabase.auth.signOut()}>Log out</button>
+      <button className="logout" onClick={logout}>Log out</button>
 
       {wallOpen && <WallpaperPicker onClose={() => setWallOpen(false)} flash={flash} />}
       {pinDialog && <AppPinDialog onClose={() => setPinDialog(false)} flash={flash} />}

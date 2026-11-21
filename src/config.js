@@ -14,3 +14,6 @@ export const USERS = [
 ]
 
 export const MAX_VIDEO_MB = 50
+
+// Public key for phone notifications (safe to be public; the private half lives only in the Supabase function)
+export const VAPID_PUBLIC_KEY = 'BIH8F4-vtxVXiVQeqY8ZW5La_2YAyhpy7QJpdhewqMPMrNf3FejVTTjonUSLGQpMduGi9sA8tDoEH3szhPcDF6I'

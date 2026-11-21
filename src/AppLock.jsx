@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { supabase } from './supabase'
+import { logout } from './push'
 import { setLocal, sha256, useLocal } from './local'
 
 // Locks the whole app with a PIN (stored only on this device).
@@ -51,7 +51,7 @@ export default function LockScreen({ hash, onUnlock }) {
   async function forgot() {
     if (!confirm('Log out and remove the app lock on this device?')) return
     setLocal('appLock', null)
-    await supabase.auth.signOut()
+    await logout()
   }
 
   return (

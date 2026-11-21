@@ -445,3 +445,12 @@ mark { background: #ffe58a; color: #111; border-radius: 3px; padding: 0 1px; }
 .radio.on::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--brand); }
 .sheet { max-height: 85dvh; overflow-y: auto; color: var(--text); }
 .dialog { color: var(--text); }
+
+/* ---------- notifications banner ---------- */
+.push-banner { display: flex; gap: 12px; margin: 2px 12px 8px; padding: 12px 14px; border-radius: 12px; background: var(--chip-on); }
+.push-bell { font-size: 22px; }
+.push-banner b { display: block; font-weight: 600; font-size: 14.5px; }
+.push-banner small { display: block; color: var(--text-2); font-size: 13px; margin-top: 2px; }
+.push-actions { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
+.push-actions .link { margin: 0; }
+.switch:disabled { opacity: .4; cursor: default; }

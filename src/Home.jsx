@@ -5,6 +5,8 @@ import { Back, Dots, Ticks } from './icons'
 import Chat from './Chat'
 import Settings from './Settings'
 import { previewOf, useLongPress } from './Bubble'
+import { enablePush, logout, needsHomeScreen, pushState } from './push'
+import { useLocal } from './local'
 
 const PAGE = 60
 const byTime = (a, b) => new Date(a.created_at) - new Date(b.created_at)
@@ -51,6 +53,27 @@ export default function Home({ session, appLocked }) {
   const unread = useRef(0)
   const openRef = useRef(null)
   openRef.current = openId
+
+  // ---------- phone notifications ----------
+  const [push, setPush] = useState('unknown')
+  const [pushDismissed, setPushDismissed] = useLocal('pushBannerDismissed', false)
+  useEffect(() => {
+    pushState().then((st) => {
+      setPush(st)
+      // already allowed on this device → make sure it is saved for this user
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') enablePush(myId).then(() => setPush('on')).catch(() => {})
+    })
+  }, [myId])
+  const turnOnPush = async () => {
+    try {
+      await enablePush(myId)
+      setPush('on')
+      flash('🔔 Notifications on')
+    } catch (e) {
+      flash(e.message)
+      pushState().then(setPush)
+    }
+  }
 
   const flash = useCallback((t) => { setToast(t); setTimeout(() => setToast(''), 2500) }, [])
 
@@ -388,6 +411,9 @@ export default function Home({ session, appLocked }) {
             onChange={updateMe}
             flash={flash}
             hasLock={!!lockHash}
+            push={push}
+            onPushOn={turnOnPush}
+            onPushOff={async () => { const { disablePush } = await import('./push'); await disablePush(); setPush('off'); flash('Notifications off on this device') }}
             onChangeLockCode={() => (lockHash ? askCode('Enter current secret code', () => setNewCode()) : setNewCode())}
           />
         ) : (
@@ -408,7 +434,7 @@ export default function Home({ session, appLocked }) {
                 {topMenu && (
                   <div className="dropdown" onMouseLeave={() => setTopMenu(false)}>
                     <button onClick={() => { setTopMenu(false); setSettingsOpen(true) }}>Settings</button>
-                    <button onClick={() => { setTopMenu(false); supabase.auth.signOut() }}>Log out</button>
+                    <button onClick={() => { setTopMenu(false); logout() }}>Log out</button>
                   </div>
                 )}
               </div>
@@ -427,6 +453,26 @@ export default function Home({ session, appLocked }) {
                   </button>
                 </div>
               </>
+            )}
+
+            {view === 'all' && !pushDismissed && (push === 'off' || push === 'blocked') && (
+              <div className="push-banner">
+                <span className="push-bell">🔔</span>
+                <div>
+                  <b>Get notified of new messages</b>
+                  <small>
+                    {needsHomeScreen()
+                      ? 'On iPhone: Share → Add to Home Screen, then open Chit Chat from there.'
+                      : push === 'blocked'
+                        ? 'Notifications are blocked. Allow them in your browser site settings.'
+                        : 'Turn on notifications so you know when a message arrives.'}
+                  </small>
+                  <div className="push-actions">
+                    {push === 'off' && !needsHomeScreen() && <button className="primary small" onClick={turnOnPush}>Turn on</button>}
+                    <button className="link" onClick={() => setPushDismissed(true)}>Not now</button>
+                  </div>
+                </div>
+              </div>
             )}
 
             <div className="chat-list">
