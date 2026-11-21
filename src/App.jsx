@@ -3,9 +3,13 @@ import { supabase } from './supabase'
 import { SUPABASE_ANON_KEY } from './config'
 import Login from './Login'
 import Home from './Home'
+import LockScreen, { useAppLock } from './AppLock'
+import { useTheme } from './local'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
+  useTheme()
+  const lock = useAppLock()
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -22,5 +26,10 @@ export default function App() {
   }
   if (session === undefined) return <div className="center-screen"><div className="spinner" /></div>
   if (!session) return <Login />
-  return <Home session={session} />
+  return (
+    <>
+      <Home session={session} appLocked={lock.locked} />
+      {lock.locked && <LockScreen hash={lock.hash} onUnlock={lock.unlock} />}
+    </>
+  )
 }

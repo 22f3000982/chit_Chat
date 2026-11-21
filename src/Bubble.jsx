@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { signedUrl, timeOf } from './utils'
 import { Ban, Down, Play, Ticks } from './icons'
+import { VoicePlayer, fmtDur } from './Voice'
+import { StickerArt } from './Stickers'
 
 // Right-click on desktop, long-press on phone
 export function useLongPress(onLong) {
@@ -14,7 +16,24 @@ export function useLongPress(onLong) {
   }
 }
 
-export default function Bubble({ m, mine, first, status, reply, replyName, onMenu, onReply, onReactions, onOpen, onJump, onRetry, onMediaLoad }) {
+// signed link for a private file (or the local preview while uploading)
+function useFileUrl(m) {
+  const [url, setUrl] = useState(m._localUrl || null)
+  const [err, setErr] = useState(false)
+  useEffect(() => {
+    if (m._localUrl) return setUrl(m._localUrl)
+    if (!m.media_path) return setUrl(null)
+    let alive = true
+    signedUrl(m.media_path).then((u) => alive && setUrl(u)).catch(() => alive && setErr(true))
+    return () => { alive = false }
+  }, [m.media_path, m._localUrl])
+  return [url, err]
+}
+
+export default function Bubble({
+  m, mine, first, status, reply, replyName, starred, highlight,
+  onMenu, onReply, onReactions, onOpen, onViewOnce, onJump, onRetry, onMediaLoad,
+}) {
   const lp = useLongPress(onMenu)
   // swipe right on a message to reply (like WhatsApp)
   const rowRef = useRef(null)
@@ -62,18 +81,28 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
     },
   }
 
+  // system notes (e.g. disappearing messages turned on)
+  if (m.media_type === 'system') {
+    return (
+      <div id={'m-' + m.id} className="system-note"><span>{m.content}</span></div>
+    )
+  }
+
   const meta = (
     <span className="meta">
+      {starred && <span className="star" title="Starred">★</span>}
       {m.edited_at && !m.deleted_for_everyone && <span className="edited">Edited</span>}
       {timeOf(m.created_at)}
       {mine && !m.deleted_for_everyone && <Ticks status={status} />}
     </span>
   )
 
+  const rowClass = `row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}${highlight ? ' hit' : ''}`
+
   if (m.deleted_for_everyone) {
     return (
-      <div id={'m-' + m.id} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`}>
-        <div className="bubble deleted" {...handlers}>
+      <div id={'m-' + m.id} className={rowClass}>
+        <div className="bubble deleted" {...lp}>
           <Ban /> <i>{mine ? 'You deleted this message' : 'This message was deleted'}</i>
           {meta}
         </div>
@@ -83,21 +112,34 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
 
   const reacts = Object.values(m.reactions || {})
   const uniq = [...new Set(reacts)]
+  const isSticker = m.media_type === 'sticker'
+  const isVoice = m.media_type === 'audio'
+  const isMedia = m.media_type === 'image' || m.media_type === 'video'
 
   return (
-    <div id={'m-' + m.id} ref={rowRef} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}${reacts.length ? ' has-reacts' : ''}`}>
+    <div id={'m-' + m.id} ref={rowRef} className={rowClass + (reacts.length ? ' has-reacts' : '')}>
       <span className="swipe-reply" aria-hidden="true">↩</span>
-      <div className={'bubble' + (m.media_type ? ' has-media' : '')} {...handlers} onDoubleClick={() => canReply && onReply?.()}>
+      <div
+        className={'bubble' + (isMedia && !m.view_once ? ' has-media' : '') + (isSticker ? ' sticker' : '') + (isVoice ? ' voice-bubble' : '')}
+        {...handlers}
+        onDoubleClick={() => canReply && onReply?.()}
+      >
         <button className="bubble-menu" onClick={(e) => { e.stopPropagation(); onMenu() }} aria-label="Message options"><Down /></button>
         {m.reply_to && (
           <div className="quote in-bubble" onClick={onJump}>
             <b>{reply ? replyName : ''}</b>
-            <span>
-              {!reply ? 'Message' : reply.deleted_for_everyone ? 'This message was deleted' : `${reply.media_type === 'image' ? '📷 Photo ' : reply.media_type === 'video' ? '🎥 Video ' : ''}${reply.content || ''}`}
-            </span>
+            <span>{!reply ? 'Message' : previewOf(reply)}</span>
           </div>
         )}
-        {m.media_type && <Media m={m} onOpen={onOpen} onLoad={onMediaLoad} />}
+        {m.view_once ? (
+          <ViewOnce m={m} mine={mine} onOpen={onViewOnce} />
+        ) : isSticker ? (
+          <StickerBody m={m} onLoad={onMediaLoad} />
+        ) : isVoice ? (
+          <VoiceBody m={m} mine={mine} />
+        ) : isMedia ? (
+          <Media m={m} onOpen={onOpen} onLoad={onMediaLoad} />
+        ) : null}
         {m.content && <span className="text"><Linkify text={m.content} /></span>}
         {meta}
         {status === 'failed' && <button className="retry" onClick={onRetry}>Not sent. Tap to retry</button>}
@@ -111,20 +153,38 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
   )
 }
 
-export function Media({ m, onOpen, onLoad }) {
-  const [url, setUrl] = useState(m._localUrl || null)
-  const [err, setErr] = useState(false)
-  useEffect(() => {
-    if (m._localUrl) return setUrl(m._localUrl)
-    if (!m.media_path) return
-    let alive = true
-    signedUrl(m.media_path).then((u) => alive && setUrl(u)).catch(() => alive && setErr(true))
-    return () => { alive = false }
-  }, [m.media_path, m._localUrl])
+function VoiceBody({ m, mine }) {
+  const [url] = useFileUrl(m)
+  return <VoicePlayer src={url} duration={m.meta?.duration} mine={mine} />
+}
 
+function StickerBody({ m, onLoad }) {
+  const [url, err] = useFileUrl(m)
+  if (m.meta?.sticker) return <StickerArt id={m.meta.sticker} />
+  if (err) return <div className="media-missing">Sticker not available</div>
+  return url ? <img className="sticker-img" src={url} alt="Sticker" onLoad={onLoad} /> : <div className="sticker-img"><div className="spinner small" /></div>
+}
+
+function ViewOnce({ m, mine, onOpen }) {
+  const kind = m.media_type === 'video' ? 'Video' : 'Photo'
+  const opened = !!m.viewed_at
+  const canOpen = !mine && !opened && m.media_path
+  return (
+    <button className={'view-once' + (opened ? ' opened' : '')} onClick={(e) => { e.stopPropagation(); canOpen && onOpen?.() }} disabled={!canOpen}>
+      <span className="vo-icon">{opened ? '◌' : '①'}</span>
+      <span>
+        {opened ? 'Opened' : kind}
+        {!opened && <small>{mine ? 'View once' : m._status ? 'Sending…' : 'Tap to view once'}</small>}
+      </span>
+    </button>
+  )
+}
+
+export function Media({ m, onOpen, onLoad }) {
+  const [url, err] = useFileUrl(m)
   const uploading = m._status === 'sending'
   return (
-    <div className="media" onClick={() => !uploading && url && onOpen()}>
+    <div className="media" onClick={() => !uploading && url && onOpen?.()}>
       {err ? (
         <div className="media-missing">Media not available</div>
       ) : !url ? (
@@ -153,6 +213,11 @@ export function Linkify({ text }) {
 export function previewOf(m) {
   if (!m) return ''
   if (m.deleted_for_everyone) return '🚫 This message was deleted'
-  const tag = m.media_type === 'image' ? '📷 Photo' : m.media_type === 'video' ? '🎥 Video' : ''
-  return [tag, m.content].filter(Boolean).join(' ').replace(/^📷 Photo (.)/, '📷 $1').replace(/^🎥 Video (.)/, '🎥 $1')
+  if (m.media_type === 'system') return m.content || ''
+  if (m.view_once) return `① ${m.media_type === 'video' ? 'Video' : 'Photo'}`
+  if (m.media_type === 'audio') return `🎤 Voice message (${fmtDur(m.meta?.duration)})`
+  if (m.media_type === 'sticker') return '💟 Sticker'
+  const tag = m.media_type === 'image' ? '📷' : m.media_type === 'video' ? '🎥' : ''
+  if (tag && !m.content) return `${tag} ${m.media_type === 'image' ? 'Photo' : 'Video'}`
+  return [tag, m.content].filter(Boolean).join(' ')
 }

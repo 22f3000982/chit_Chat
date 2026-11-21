@@ -21,7 +21,7 @@ function listTime(iso) {
   return l === 'Today' ? timeOf(iso) : l
 }
 
-export default function Home({ session }) {
+export default function Home({ session, appLocked }) {
   const myId = session.user.id
   const [me, setMe] = useState(null)
   const [friends, setFriends] = useState([])
@@ -218,10 +218,27 @@ export default function Home({ session }) {
     else setOpenId(null)
   }
 
+  // ---------- disappearing messages: hide expired ones, clean them up ----------
+  const [nowTick, setNowTick] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 30000)
+    const clean = async () => {
+      const { data, error } = await supabase.rpc('cleanup_expired')
+      if (error) return
+      const paths = (data || []).map((r) => (typeof r === 'string' ? r : r?.cleanup_expired)).filter(Boolean)
+      if (paths.length) supabase.storage.from('media').remove(paths)
+    }
+    clean()
+    const c = setInterval(clean, 5 * 60000)
+    return () => { clearInterval(t); clearInterval(c) }
+  }, [])
+
   // ---------- per-chat data ----------
   const convo = useCallback(
-    (fid) => messages.filter((m) => (m.sender_id === myId && m.receiver_id === fid) || (m.sender_id === fid && m.receiver_id === myId)),
-    [messages, myId]
+    (fid) => messages.filter((m) =>
+      ((m.sender_id === myId && m.receiver_id === fid) || (m.sender_id === fid && m.receiver_id === myId)) &&
+      (!m.expires_at || new Date(m.expires_at) > nowTick)),
+    [messages, myId, nowTick]
   )
 
   const fallbackReadAt = (fid) => {
@@ -327,7 +344,7 @@ export default function Home({ session }) {
       const c = convo(f.id)
       return { friend: f, last: c[c.length - 1], pref: prefs[f.id] || {}, unread: unreadCount(f.id) }
     })
-  }, [friends, messages, prefs])
+  }, [friends, messages, prefs, nowTick])
 
   const inView = (r) => {
     const p = r.pref
@@ -468,11 +485,11 @@ export default function Home({ session }) {
             online={online.has(openFriend.id)}
             typing={!!typing[openFriend.id]}
             sendTyping={sendTyping}
-            visible={visible}
+            visible={visible && !appLocked}
             pref={prefs[openFriend.id]}
             updatePref={updatePref}
             onBack={closeChat}
-            onChatMenu={() => setChatMenu(openFriend.id)}
+            chatActions={chatActions(openFriend.id)}
             flash={flash}
           />
         ) : (
@@ -520,7 +537,7 @@ function ChatRow({ row, myId, me, active, typing, onOpen, onMenu }) {
           <span className={'chat-row-preview' + (typing ? ' typing' : '')}>
             {typing ? 'typing…' : last ? (
               <>
-                {mine && !last.deleted_for_everyone && <Ticks status={st} />}
+                {mine && !last.deleted_for_everyone && last.media_type !== 'system' && <Ticks status={st} />}
                 {previewOf(last)}
               </>
             ) : 'Tap to start chatting'}
