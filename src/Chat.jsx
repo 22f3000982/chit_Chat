@@ -229,6 +229,7 @@ export default function Chat({
                 reply={reply}
                 replyName={reply ? nameOf(reply.sender_id) : ''}
                 onMenu={() => setMenu(m)}
+                onReply={() => { setReplyTo(m); textRef.current?.focus() }}
                 onOpen={() => openViewer(m)}
                 onJump={() => jumpTo(m.reply_to)}
                 onRetry={() => retry(m)}

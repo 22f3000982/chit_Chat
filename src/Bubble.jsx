@@ -14,8 +14,48 @@ export function useLongPress(onLong) {
   }
 }
 
-export default function Bubble({ m, mine, first, status, reply, replyName, onMenu, onOpen, onJump, onRetry, onMediaLoad }) {
-  const handlers = useLongPress(onMenu)
+export default function Bubble({ m, mine, first, status, reply, replyName, onMenu, onReply, onOpen, onJump, onRetry, onMediaLoad }) {
+  const lp = useLongPress(onMenu)
+  // swipe right on a message to reply (like WhatsApp)
+  const rowRef = useRef(null)
+  const swipe = useRef(null)
+  const canReply = !m.deleted_for_everyone && !m._status
+  const setX = (x) => {
+    const el = rowRef.current
+    if (!el) return
+    el.style.transform = x ? `translateX(${x}px)` : ''
+    el.style.setProperty('--reply-o', Math.min(x / 60, 1))
+  }
+  const handlers = {
+    ...lp,
+    onTouchStart: (e) => {
+      lp.onTouchStart(e)
+      const t = e.touches[0]
+      swipe.current = { x: t.clientX, y: t.clientY, dx: 0, dir: null }
+    },
+    onTouchMove: (e) => {
+      const s = swipe.current
+      if (!s || !canReply) return lp.onTouchMove(e)
+      const t = e.touches[0]
+      const dx = t.clientX - s.x
+      const dy = t.clientY - s.y
+      if (!s.dir && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) s.dir = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+      lp.onTouchMove(e)
+      if (s.dir !== 'x') return
+      s.dx = Math.max(0, Math.min(dx, 80))
+      if (rowRef.current) rowRef.current.style.transition = 'none'
+      setX(s.dx)
+    },
+    onTouchEnd: (e) => {
+      lp.onTouchEnd(e)
+      const s = swipe.current
+      swipe.current = null
+      if (!s || s.dir !== 'x') return
+      if (rowRef.current) rowRef.current.style.transition = 'transform .2s'
+      setX(0)
+      if (s.dx > 60) { navigator.vibrate?.(15); onReply?.() }
+    },
+  }
 
   const meta = (
     <span className="meta">
@@ -36,8 +76,9 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
   }
 
   return (
-    <div id={'m-' + m.id} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`}>
-      <div className={'bubble' + (m.media_type ? ' has-media' : '')} {...handlers}>
+    <div id={'m-' + m.id} ref={rowRef} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`}>
+      <span className="swipe-reply" aria-hidden="true">↩</span>
+      <div className={'bubble' + (m.media_type ? ' has-media' : '')} {...handlers} onDoubleClick={() => canReply && onReply?.()}>
         <button className="bubble-menu" onClick={(e) => { e.stopPropagation(); onMenu() }} aria-label="Message options"><Down /></button>
         {m.reply_to && (
           <div className="quote in-bubble" onClick={onJump}>
