@@ -53,7 +53,12 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
       if (!s || s.dir !== 'x') return
       if (rowRef.current) rowRef.current.style.transition = 'transform .2s'
       setX(0)
-      if (s.dx > 60) { navigator.vibrate?.(15); onReply?.() }
+      if (s.dx > 55) { navigator.vibrate?.(15); onReply?.() }
+    },
+    onTouchCancel: () => {
+      swipe.current = null
+      if (rowRef.current) rowRef.current.style.transition = 'transform .2s'
+      setX(0)
     },
   }
 
