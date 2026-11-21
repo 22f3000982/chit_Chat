@@ -14,7 +14,7 @@ export function useLongPress(onLong) {
   }
 }
 
-export default function Bubble({ m, mine, first, status, reply, replyName, onMenu, onReply, onOpen, onJump, onRetry, onMediaLoad }) {
+export default function Bubble({ m, mine, first, status, reply, replyName, onMenu, onReply, onReactions, onOpen, onJump, onRetry, onMediaLoad }) {
   const lp = useLongPress(onMenu)
   // swipe right on a message to reply (like WhatsApp)
   const rowRef = useRef(null)
@@ -64,6 +64,7 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
 
   const meta = (
     <span className="meta">
+      {m.edited_at && !m.deleted_for_everyone && <span className="edited">Edited</span>}
       {timeOf(m.created_at)}
       {mine && !m.deleted_for_everyone && <Ticks status={status} />}
     </span>
@@ -80,8 +81,11 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
     )
   }
 
+  const reacts = Object.values(m.reactions || {})
+  const uniq = [...new Set(reacts)]
+
   return (
-    <div id={'m-' + m.id} ref={rowRef} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}`}>
+    <div id={'m-' + m.id} ref={rowRef} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}${reacts.length ? ' has-reacts' : ''}`}>
       <span className="swipe-reply" aria-hidden="true">↩</span>
       <div className={'bubble' + (m.media_type ? ' has-media' : '')} {...handlers} onDoubleClick={() => canReply && onReply?.()}>
         <button className="bubble-menu" onClick={(e) => { e.stopPropagation(); onMenu() }} aria-label="Message options"><Down /></button>
@@ -97,6 +101,11 @@ export default function Bubble({ m, mine, first, status, reply, replyName, onMen
         {m.content && <span className="text"><Linkify text={m.content} /></span>}
         {meta}
         {status === 'failed' && <button className="retry" onClick={onRetry}>Not sent. Tap to retry</button>}
+        {reacts.length > 0 && (
+          <button className="reacts" onClick={(e) => { e.stopPropagation(); onReactions?.() }} aria-label="Reactions">
+            {uniq.join('')}{reacts.length > 1 && <span>{reacts.length}</span>}
+          </button>
+        )}
       </div>
     </div>
   )

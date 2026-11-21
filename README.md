@@ -4,7 +4,7 @@ A private, WhatsApp-style chat for two people: **Sneha** and **Axon**.
 
 Features: WhatsApp-style chat list (pin, archive, chat lock with secret code, hidden chats, unread badges, search) · name + password login · real-time messages · ✓ sent / ✓✓ delivered / blue ✓✓ read ·
 online, typing… and last seen · hide last seen · turn off read receipts · photos & videos (up to 50 MB) ·
-reply to a message · delete for me / delete for everyone (also removes the file) · emoji · change password ·
+reply to a message (swipe right) · emoji reactions · edit messages for 15 min (shows "Edited") · paste or drag-and-drop photos · delete for me / delete for everyone (also removes the file) · emoji · change password ·
 installable on the phone home screen.
 
 Built with React + Vite, Supabase (login, database, realtime, storage) and hosted on Vercel.
@@ -17,7 +17,8 @@ Built with React + Vite, Supabase (login, database, realtime, storage) and hoste
    passwords in place of `CHANGE_ME_SNEHA` / `CHANGE_ME_AXON` → **Run**. This creates both logins
    (to change a password later, just run it again with the new one).
 3. **SQL Editor → New query** → paste [`supabase/update_1_chat_list.sql`](supabase/update_1_chat_list.sql) → **Run** (chat list: pin / archive / lock / hide).
-4. **Authentication → Sign In / Providers → Email**: turn **off** "Allow new users to sign up" so nobody else can make an account.
+4. **SQL Editor → New query** → paste [`supabase/update_2_react_edit.sql`](supabase/update_2_react_edit.sql) → **Run** (reactions + edit).
+5. **Authentication → Sign In / Providers → Email**: turn **off** "Allow new users to sign up" so nobody else can make an account.
 
 ### 2. Vercel
 1. vercel.com → **Add New → Project** → import this GitHub repo.

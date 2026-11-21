@@ -1,5 +1,8 @@
 const I = (props) => <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true" {...props} />
 
+export const Check = () => (
+  <I><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z" /></I>
+)
 export const Send = () => (
   <I><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" /></I>
 )

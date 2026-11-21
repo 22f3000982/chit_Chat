@@ -2,8 +2,10 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { supabase } from './supabase'
 import { MAX_VIDEO_MB } from './config'
 import { compressImage, dayKey, dayLabel, EMOJIS, initials, lastSeenText, signedUrl } from './utils'
-import { Back, Clip, Close, Dots, Down, Download, Send, Smile } from './icons'
+import { Back, Check, Clip, Close, Dots, Down, Download, Send, Smile } from './icons'
 import Bubble, { previewOf } from './Bubble'
+
+const QUICK = ['👍', '❤️', '😂', '😮', '😢', '🙏']
 
 // One conversation. Shared data (messages, presence, prefs) lives in Home.
 export default function Chat({
@@ -22,6 +24,10 @@ export default function Chat({
   const [viewer, setViewer] = useState(null)
   const [newCount, setNewCount] = useState(0)
   const [showDown, setShowDown] = useState(false)
+  const [editing, setEditing] = useState(null) // message being edited
+  const [reactInfo, setReactInfo] = useState(null) // message whose reactions are shown
+  const [moreEmoji, setMoreEmoji] = useState(false)
+  const [dragging, setDragging] = useState(false)
 
   const listRef = useRef(null)
   const atBottom = useRef(true)
@@ -93,6 +99,7 @@ export default function Chat({
   const markFailed = (id) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, _status: 'failed' } : m)))
 
   async function sendText() {
+    if (editing) return saveEdit()
     const content = text.trim()
     if (!content) return
     const row = { id: crypto.randomUUID(), sender_id: myId, receiver_id: fid, content, reply_to: replyTo?.id || null }
@@ -107,10 +114,90 @@ export default function Chat({
     setMessages((prev) => mergeMessages(prev, [data]))
   }
 
+  // ---------- edit ----------
+  const EDIT_MINUTES = 15
+  const canEdit = (m) =>
+    m.sender_id === myId && !m.deleted_for_everyone && !m._status && Date.now() - new Date(m.created_at) < EDIT_MINUTES * 60000
+
+  function startEdit(m) {
+    setReplyTo(null)
+    setEditing(m)
+    setText(m.content || '')
+    setTimeout(() => {
+      const el = textRef.current
+      if (!el) return
+      el.focus()
+      el.style.height = 'auto'
+      el.style.height = Math.min(el.scrollHeight, 130) + 'px'
+      el.setSelectionRange(el.value.length, el.value.length)
+    }, 30)
+  }
+
+  function cancelEdit() {
+    setEditing(null)
+    setText('')
+    if (textRef.current) textRef.current.style.height = 'auto'
+  }
+
+  async function saveEdit() {
+    const m = editing
+    const content = text.trim()
+    if (!content && !m.media_type) return flash('Message cannot be empty. Use Delete instead.')
+    cancelEdit()
+    if ((content || null) === (m.content || null)) return
+    if (!canEdit(m)) return flash(`Messages can only be edited for ${EDIT_MINUTES} minutes`)
+    const now = new Date().toISOString()
+    setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, content: content || null, edited_at: now } : x)))
+    const { data, error } = await supabase.from('messages').update({ content: content || null, edited_at: now }).eq('id', m.id).select().single()
+    if (error) {
+      setMessages((prev) => prev.map((x) => (x.id === m.id ? m : x)))
+      return flash(error.message.includes('15 minutes') ? 'Too late to edit (15 min limit)' : 'Could not edit: ' + error.message)
+    }
+    setMessages((prev) => mergeMessages(prev, [data]))
+  }
+
+  // ---------- reactions ----------
+  async function react(m, emoji) {
+    setMenu(null)
+    setMoreEmoji(false)
+    setReactInfo(null)
+    const current = (m.reactions || {})[myId]
+    const next = current === emoji ? null : emoji // same emoji again removes it
+    const reactions = { ...(m.reactions || {}) }
+    if (next) reactions[myId] = next
+    else delete reactions[myId]
+    setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, reactions } : x)))
+    const { error } = await supabase.rpc('react', { msg_id: m.id, emoji: next })
+    if (error) {
+      setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, reactions: m.reactions } : x)))
+      flash(error.message.includes('function') ? 'Run update_2_react_edit.sql in Supabase first' : 'Could not react')
+    }
+  }
+
+  // ---------- photos / videos: pick, paste or drop ----------
   function pickFile(e) {
     const file = e.target.files?.[0]
     e.target.value = ''
+    handleFile(file)
+  }
+
+  function onPaste(e) {
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.kind === 'file' && /^(image|video)\//.test(i.type))
+    const file = item?.getAsFile()
     if (!file) return
+    e.preventDefault()
+    handleFile(file)
+  }
+
+  function onDrop(e) {
+    e.preventDefault()
+    setDragging(false)
+    handleFile(e.dataTransfer?.files?.[0])
+  }
+
+  function handleFile(file) {
+    if (!file) return
+    if (editing) cancelEdit()
     const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('image/') ? 'image' : null
     if (!kind) return flash('Only photos and videos can be sent')
     if (kind === 'video' && file.size > MAX_VIDEO_MB * 1024 * 1024) return flash(`Video is too big (max ${MAX_VIDEO_MB} MB)`)
@@ -196,7 +283,13 @@ export default function Chat({
   let prevSender = null
 
   return (
-    <div className="chat">
+    <div
+      className="chat"
+      onDragOver={(e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); setDragging(true) } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDragging(false) }}
+      onDrop={onDrop}
+    >
+      {dragging && <div className="drop-hint">Drop photo or video to send</div>}
       <header className="chat-header">
         <button className="icon-btn back-btn" onClick={onBack} aria-label="Back to chats"><Back /></button>
         <span className="avatar">{initials(friend.name)}</span>
@@ -229,7 +322,8 @@ export default function Chat({
                 reply={reply}
                 replyName={reply ? nameOf(reply.sender_id) : ''}
                 onMenu={() => setMenu(m)}
-                onReply={() => { setReplyTo(m); textRef.current?.focus() }}
+                onReply={() => { if (editing) cancelEdit(); setReplyTo(m); textRef.current?.focus() }}
+                onReactions={() => setReactInfo(m)}
                 onOpen={() => openViewer(m)}
                 onJump={() => jumpTo(m.reply_to)}
                 onRetry={() => retry(m)}
@@ -256,6 +350,15 @@ export default function Chat({
       )}
 
       <footer className="composer">
+        {editing && (
+          <div className="reply-bar">
+            <div className="quote edit">
+              <b>✏️ Edit message</b>
+              <span>{previewOf(editing)}</span>
+            </div>
+            <button className="icon-btn dark" onClick={cancelEdit} aria-label="Cancel edit"><Close /></button>
+          </div>
+        )}
         {replyTo && (
           <div className="reply-bar">
             <div className="quote">
@@ -279,14 +382,16 @@ export default function Chat({
                 e.target.style.height = 'auto'
                 e.target.style.height = Math.min(e.target.scrollHeight, 130) + 'px'
               }}
+              onPaste={onPaste}
               onKeyDown={(e) => {
+                if (e.key === 'Escape' && editing) return cancelEdit()
                 if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); sendText() }
               }}
             />
-            <button className="icon-btn dark" onClick={() => fileInput.current?.click()} aria-label="Attach photo or video"><Clip /></button>
+            {!editing && <button className="icon-btn dark" onClick={() => fileInput.current?.click()} aria-label="Attach photo or video"><Clip /></button>}
             <input ref={fileInput} type="file" accept="image/*,video/*" hidden onChange={pickFile} />
           </div>
-          <button className="send-btn" onClick={sendText} disabled={!text.trim()} aria-label="Send"><Send /></button>
+          <button className="send-btn" onClick={sendText} disabled={!text.trim() && !editing?.media_type} aria-label={editing ? 'Save edit' : 'Send'}>{editing ? <Check /> : <Send />}</button>
         </div>
       </footer>
 
@@ -294,7 +399,23 @@ export default function Chat({
         <div className="overlay" onClick={() => setMenu(null)}>
           <div className="sheet" onClick={(e) => e.stopPropagation()}>
             {!menu.deleted_for_everyone && !menu._status && (
-              <button onClick={() => { setReplyTo(menu); setMenu(null); textRef.current?.focus() }}>↩️ Reply</button>
+              <>
+                <div className="react-bar">
+                  {QUICK.map((e) => (
+                    <button key={e} className={(menu.reactions || {})[myId] === e ? 'mine' : ''} onClick={() => react(menu, e)}>{e}</button>
+                  ))}
+                  <button className="more" onClick={() => setMoreEmoji((v) => !v)} aria-label="More emoji">＋</button>
+                </div>
+                {moreEmoji && (
+                  <div className="emoji-panel in-sheet">
+                    {EMOJIS.map((e) => <button key={e} onClick={() => react(menu, e)}>{e}</button>)}
+                  </div>
+                )}
+                <button onClick={() => { if (editing) cancelEdit(); setReplyTo(menu); setMenu(null); textRef.current?.focus() }}>↩️ Reply</button>
+              </>
+            )}
+            {canEdit(menu) && (
+              <button onClick={() => { const m = menu; setMenu(null); startEdit(m) }}>✏️ Edit</button>
             )}
             {menu.content && !menu.deleted_for_everyone && (
               <button onClick={() => { navigator.clipboard?.writeText(menu.content); setMenu(null); flash('Copied') }}>📋 Copy</button>
@@ -306,6 +427,28 @@ export default function Chat({
           </div>
         </div>
       )}
+
+      {reactInfo && (() => {
+        const live = messages.find((x) => x.id === reactInfo.id) || reactInfo
+        const entries = Object.entries(live.reactions || {})
+        return (
+          <div className="overlay" onClick={() => setReactInfo(null)}>
+            <div className="sheet" onClick={(e) => e.stopPropagation()}>
+              <div className="sheet-title">{entries.length} reaction{entries.length === 1 ? '' : 's'}</div>
+              {entries.map(([uid, emoji]) => (
+                <button key={uid} className="react-who" onClick={() => (uid === myId ? react(live, emoji) : setReactInfo(null))}>
+                  <span className="avatar small">{initials(uid === myId ? me.name : friend.name)}</span>
+                  <span className="react-name">
+                    {uid === myId ? 'You' : friend.name}
+                    {uid === myId && <small>Tap to remove</small>}
+                  </span>
+                  <span className="react-emoji">{emoji}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
 
       {confirmDelete && (
         <div className="overlay" onClick={() => setConfirmDelete(null)}>

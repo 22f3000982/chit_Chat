@@ -247,3 +247,25 @@ input, textarea { font: inherit; color: inherit; }
 .row { position: relative; --reply-o: 0; }
 .swipe-reply { position: absolute; left: -34px; top: 50%; transform: translateY(-50%) scale(calc(.6 + var(--reply-o) * .4)); opacity: var(--reply-o); width: 28px; height: 28px; border-radius: 50%; background: rgba(255,255,255,.9); color: var(--muted); display: grid; place-items: center; font-size: 15px; box-shadow: 0 1px 2px rgba(0,0,0,.15); pointer-events: none; }
 .bubble { touch-action: pan-y; }
+
+/* ---------- reactions / edit / drop ---------- */
+.meta .edited { margin-right: 3px; font-style: normal; }
+.row.has-reacts { margin-bottom: 18px; }
+.reacts { position: absolute; bottom: -17px; display: inline-flex; align-items: center; gap: 2px; background: #fff; border-radius: 12px; padding: 2px 6px; font-size: 14px; line-height: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.2); z-index: 1; }
+.reacts span { font-size: 12px; color: var(--muted); margin-left: 2px; }
+.mine .reacts { right: 10px; }
+.theirs .reacts { left: 10px; }
+.react-bar { display: flex; justify-content: space-around; align-items: center; padding: 6px 12px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.sheet .react-bar button { width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 26px; text-align: center; display: grid; place-items: center; transition: transform .1s; }
+.sheet .react-bar button:hover { transform: scale(1.15); background: #f0f2f5; }
+.sheet .react-bar button.mine { background: #d9fdd3; }
+.sheet .react-bar .more { font-size: 22px; color: var(--muted); background: #f0f2f5; }
+.emoji-panel.in-sheet { border-top: 0; max-height: 180px; }
+.sheet .emoji-panel.in-sheet button { padding: 0; text-align: center; font-size: 26px; }
+.react-who { display: flex !important; align-items: center; gap: 14px; }
+.react-name { flex: 1; display: flex; flex-direction: column; }
+.react-name small { color: var(--muted); font-size: 12.5px; }
+.react-emoji { font-size: 24px; }
+.quote.edit { border-left-color: #53bdeb; }
+.quote.edit b { color: #027eb5; }
+.drop-hint { position: absolute; inset: 10px; z-index: 15; border: 3px dashed var(--green); border-radius: 16px; background: rgba(217,253,211,.85); display: grid; place-items: center; font-size: 20px; font-weight: 600; color: var(--green-dark); pointer-events: none; }
