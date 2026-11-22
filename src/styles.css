@@ -576,3 +576,27 @@ mark { background: #ffe58a; color: #111; border-radius: 3px; padding: 0 1px; }
 
 .sheet .sched-item .link, .sheet .big-file .link { display: inline-block; width: auto; flex: none; padding: 8px 6px; }
 .sheet .sched-item, .sheet .big-file { text-align: left; }
+
+/* ---------- underline / spoiler ---------- */
+.text u { text-underline-offset: 2px; }
+.spoiler { background: currentColor; border-radius: 4px; cursor: pointer; transition: background .2s, filter .2s; filter: blur(0); color: inherit; padding: 0 2px; }
+.spoiler:not(.shown) { color: transparent; background: var(--muted); filter: blur(.4px); user-select: none; }
+.spoiler:not(.shown) * { color: transparent !important; background: transparent !important; }
+.spoiler.shown { background: var(--quote-bg); }
+
+/* ---------- format bar (shown when text is selected) ---------- */
+.format-bar { display: flex; gap: 4px; background: var(--panel); border-radius: 12px; padding: 4px; margin: 0 54px 6px 0; box-shadow: 0 1px 3px rgba(0,0,0,.18); overflow-x: auto; }
+.format-bar button { min-width: 38px; height: 34px; border-radius: 8px; padding: 0 10px; font-size: 16px; color: var(--text); white-space: nowrap; }
+.format-bar button:hover { background: var(--hover); }
+.format-bar .mono { font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+
+/* ---------- drafts ---------- */
+.draft-label { color: var(--accent); font-weight: 600; margin-right: 2px; }
+
+/* ---------- profile photo ---------- */
+.avatar { overflow: hidden; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-edit { position: relative; cursor: pointer; flex: none; }
+.avatar-edit .cam { position: absolute; right: -2px; bottom: -2px; width: 26px; height: 26px; border-radius: 50%; background: var(--brand); color: #fff; display: grid; place-items: center; font-size: 13px; border: 2px solid var(--panel); }
+.small-link { display: block; margin: 4px 0 0; font-size: 13px; padding: 0; }
+.list-header .avatar.small { cursor: pointer; }

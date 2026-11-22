@@ -5,6 +5,7 @@ import { initials, compressImage } from './utils'
 import { Back } from './icons'
 import { setLocal, sha256, useLocal, WALL_COLORS, wallpaperStyle } from './local'
 import StorageSheet from './Storage'
+import Avatar, { removeAvatar, uploadAvatar } from './Avatar'
 
 export default function Settings({ me, friends = [], onClose, onChange, flash, hasLock, onChangeLockCode, push, onPushOn, onPushOff }) {
   const [pass, setPass] = useState('')
@@ -16,6 +17,30 @@ export default function Settings({ me, friends = [], onClose, onChange, flash, h
   const [wallOpen, setWallOpen] = useState(false)
   const [pinDialog, setPinDialog] = useState(false)
   const [storageOpen, setStorageOpen] = useState(false)
+  const [photoBusy, setPhotoBusy] = useState(false)
+
+  async function changePhoto(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setPhotoBusy(true)
+    try {
+      onChange(await uploadAvatar(me, file), true)
+      flash('Profile photo updated ✔')
+    } catch (err) {
+      flash(err.message || 'Could not upload photo')
+    }
+    setPhotoBusy(false)
+  }
+
+  async function deletePhoto() {
+    try {
+      onChange(await removeAvatar(me), true)
+      flash('Profile photo removed')
+    } catch (err) {
+      flash(err.message)
+    }
+  }
 
   async function changePassword() {
     if (pass.length < 6) return flash('Password must be at least 6 characters')
@@ -34,8 +59,16 @@ export default function Settings({ me, friends = [], onClose, onChange, flash, h
         <div className="who-name">Settings</div>
       </header>
       <div className="settings-me">
-        <span className="avatar big">{initials(me.name)}</span>
-        <div><b>{me.name}</b><small>Logged in</small></div>
+        <label className="avatar-edit" title="Change profile photo">
+          <Avatar person={me} className="big" />
+          <span className="cam">{photoBusy ? '…' : '📷'}</span>
+          <input type="file" accept="image/*" hidden onChange={changePhoto} disabled={photoBusy} />
+        </label>
+        <div>
+          <b>{me.name}</b>
+          <small>Tap the photo to change it</small>
+          {me.avatar_path && <button className="link small-link" onClick={deletePhoto}>Remove photo</button>}
+        </div>
       </div>
 
       <h3>Notifications</h3>

@@ -3,8 +3,10 @@ import { supabase } from './supabase'
 import { dayLabel, initials, playPop, timeOf } from './utils'
 import { Back, Dots, Ticks } from './icons'
 import Chat from './Chat'
+import Avatar from './Avatar'
 import Settings from './Settings'
 import { previewOf, useLongPress } from './Bubble'
+import { stripFormat } from './format'
 import { enablePush, logout, needsHomeScreen, pushState } from './push'
 import { getLocal, setLocal, useLocal } from './local'
 
@@ -456,9 +458,9 @@ export default function Home({ session, appLocked }) {
   const archivedUnread = archivedRows.reduce((n, r) => n + (r.unread ? 1 : 0), 0)
   const lockedUnread = lockedRows.some((r) => r.unread)
 
-  async function updateMe(patch) {
+  async function updateMe(patch, alreadySaved = false) {
     setMe((p) => ({ ...p, ...patch }))
-    await supabase.from('profiles').update(patch).eq('id', myId)
+    if (!alreadySaved) await supabase.from('profiles').update(patch).eq('id', myId)
   }
 
   if (loading || !me) return <div className="center-screen"><div className="spinner" /></div>
@@ -496,7 +498,7 @@ export default function Home({ session, appLocked }) {
                 </>
               )}
               <div className="spacer" />
-              <span className="avatar small" title={me.name}>{initials(me.name)}</span>
+              <Avatar person={me} className="small" title={me.name} onClick={() => setSettingsOpen(true)} />
               <div className="top-menu-wrap">
                 <button className="icon-btn dark" onClick={() => setTopMenu((s) => !s)} aria-label="Menu"><Dots /></button>
                 {topMenu && (
@@ -640,11 +642,12 @@ export default function Home({ session, appLocked }) {
 function ChatRow({ row, myId, me, active, typing, onOpen, onMenu }) {
   const { friend, last, pref, unread } = row
   const handlers = useLongPress(onMenu)
+  const [draft] = useLocal('draft:' + friend.id, '')
   const mine = last?.sender_id === myId
   const st = !last ? null : last._status || (last.read_at && me.read_receipts ? 'read' : last.delivered_at ? 'delivered' : 'sent')
   return (
     <div className={'chat-row' + (active ? ' active' : '')} onClick={onOpen} {...handlers} role="button" tabIndex={0}>
-      <span className="avatar big-ish">{initials(friend.name)}</span>
+      <Avatar person={friend} className="big-ish" />
       <div className="chat-row-main">
         <div className="chat-row-top">
           <span className="chat-row-name">{friend.name}</span>
@@ -652,7 +655,9 @@ function ChatRow({ row, myId, me, active, typing, onOpen, onMenu }) {
         </div>
         <div className="chat-row-bottom">
           <span className={'chat-row-preview' + (typing ? ' typing' : '')}>
-            {typing ? (typing === 'recording' ? '🎤 recording audio…' : 'typing…') : last ? (
+            {typing ? (typing === 'recording' ? '🎤 recording audio…' : 'typing…') : draft && !active ? (
+              <><span className="draft-label">Draft:</span> {stripFormat(draft).replace(/\s+/g, ' ')}</>
+            ) : last ? (
               <>
                 {mine && !last.deleted_for_everyone && last.media_type !== 'system' && <Ticks status={st} />}
                 {previewOf(last)}

@@ -6,6 +6,9 @@ import { Back, Check, Clip, Close, Dots, Down, Send, Smile } from './icons'
 import Bubble, { AlbumBubble, isAlbumable, previewOf } from './Bubble'
 import MediaPreview from './MediaPreview'
 import Viewer from './Viewer'
+import Avatar from './Avatar'
+import { wrapSelection } from './format'
+import { getLocal, setLocal } from './local'
 import { useDictation, useRecorder, fmtDur } from './Voice'
 import { StickerPicker, photoToSticker } from './Stickers'
 import { useLocal, wallpaperStyle } from './local'
@@ -37,7 +40,8 @@ export default function Chat({
   const fid = friend.id
   const pair = `and(sender_id.eq.${myId},receiver_id.eq.${fid}),and(sender_id.eq.${fid},receiver_id.eq.${myId})`
 
-  const [text, setText] = useState('')
+  const [text, setText] = useState(() => getLocal('draft:' + friend.id, '')) // unsent draft comes back
+  const [hasSel, setHasSel] = useState(false)
   const [replyTo, setReplyTo] = useState(null)
   const [showEmoji, setShowEmoji] = useState(false)
   const [emojiTab, setEmojiTab] = useState('emoji')
@@ -88,6 +92,27 @@ export default function Chat({
     setText((prev) => (prev && !prev.endsWith(' ') ? prev + ' ' : prev) + t)
     sendTyping(fid)
   })
+
+  // ---------- drafts: keep the unsent message for this chat ----------
+  useEffect(() => {
+    if (!editing) setLocal('draft:' + fid, text.trim() ? text : null)
+  }, [text, editing, fid])
+  useEffect(() => {
+    // grow the box to fit a restored draft
+    const el = textRef.current
+    if (el && text) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 130) + 'px' }
+  }, [])
+
+  // ---------- formatting: Ctrl+B / I / U, and the bar shown when text is selected ----------
+  function applyFormat(marker) {
+    const el = textRef.current
+    if (!el) return
+    const r = wrapSelection(el, marker)
+    setText(r.value)
+    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(r.start, r.end); setHasSel(r.start !== r.end) })
+  }
+  const SHORTCUTS = { b: '*', i: '_', u: '__' }
+  const checkSel = (e) => setHasSel(e.target.selectionStart !== e.target.selectionEnd)
 
   // ---------- per-chat extras: stars, pinned, disappearing setting ----------
   useEffect(() => {
@@ -631,7 +656,7 @@ export default function Chat({
       ) : (
         <header className="chat-header">
           <button className="icon-btn back-btn" onClick={onBack} aria-label="Back to chats"><Back /></button>
-          <span className="avatar" onClick={openProfile} role="button">{initials(friend.name)}</span>
+          <Avatar person={friend} onClick={openProfile} />
           <div className="who-info" onClick={openProfile} role="button" title="View contact info">
             <div className="who-name">
               {friend.name} {pref?.locked && <span title="Locked chat">🔒</span>} {disappearSecs > 0 && <span title={'Disappearing: ' + disappearLabel(disappearSecs)}>⏳</span>}
@@ -759,6 +784,16 @@ export default function Chat({
             ⏰ {scheduled.length} scheduled message{scheduled.length > 1 ? 's' : ''} · next {fullTime(scheduled[0].send_at)}
           </button>
         )}
+        {hasSel && !recorder.recording && (
+          <div className="format-bar" onMouseDown={(e) => e.preventDefault()}>
+            <button onClick={() => applyFormat('*')} title="Bold (Ctrl+B)"><b>B</b></button>
+            <button onClick={() => applyFormat('_')} title="Italic (Ctrl+I)"><i>I</i></button>
+            <button onClick={() => applyFormat('__')} title="Underline (Ctrl+U)"><u>U</u></button>
+            <button onClick={() => applyFormat('~')} title="Strikethrough (Ctrl+Shift+X)"><s>S</s></button>
+            <button onClick={() => applyFormat('`')} title="Code" className="mono">{'</>'}</button>
+            <button onClick={() => applyFormat('||')} title="Spoiler (Ctrl+Shift+S)">🙈 Spoiler</button>
+          </div>
+        )}
         {editing && (
           <div className="reply-bar">
             <div className="quote edit">
@@ -803,8 +838,16 @@ export default function Chat({
                   e.target.style.height = Math.min(e.target.scrollHeight, 130) + 'px'
                 }}
                 onPaste={onPaste}
+                onSelect={checkSel}
+                onBlur={() => setTimeout(() => setHasSel(false), 150)}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape' && editing) return cancelEdit()
+                  const k = e.key.toLowerCase()
+                  if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+                    if (e.shiftKey && k === 's') { e.preventDefault(); return applyFormat('||') }
+                    if (e.shiftKey && k === 'x') { e.preventDefault(); return applyFormat('~') }
+                    if (!e.shiftKey && SHORTCUTS[k]) { e.preventDefault(); return applyFormat(SHORTCUTS[k]) }
+                  }
                   if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); sendText() }
                 }}
               />
@@ -873,6 +916,7 @@ export default function Chat({
               onStarred={() => openPanel('starred')}
               onSearch={() => { setPanel(null); setSearchOpen(true) }}
               onDisappear={() => setDisappearOpen(true)}
+              onPhoto={friend.avatar_path ? () => setViewer({ items: [{ path: friend.avatar_path, kind: 'image', name: friend.name + '.jpg' }], index: 0 }) : undefined}
             />
           ) : !panelItems ? (
             <div className="center-fill"><div className="spinner" /></div>
@@ -940,7 +984,7 @@ export default function Chat({
               <div className="sheet-title">{entries.length} reaction{entries.length === 1 ? '' : 's'}</div>
               {entries.map(([uid, emoji]) => (
                 <button key={uid} className="react-who" onClick={() => (uid === myId ? react(live, emoji) : setReactInfo(null))}>
-                  <span className="avatar small">{initials(uid === myId ? me.name : friend.name)}</span>
+                  <Avatar person={uid === myId ? me : friend} className="small" />
                   <span className="react-name">
                     {uid === myId ? 'You' : friend.name}
                     {uid === myId && <small>Tap to remove</small>}
@@ -1130,7 +1174,7 @@ function ScheduleDialog({ initial = '', onClose, onSchedule }) {
   )
 }
 
-function ProfilePanel({ friend, me, status, stats, disappear, onMedia, onStarred, onSearch, onDisappear }) {
+function ProfilePanel({ friend, me, status, stats, disappear, onMedia, onStarred, onSearch, onDisappear, onPhoto }) {
   const n = (k) => (stats && !stats.error ? (stats[k] ?? 0).toLocaleString() : '…')
   const mine = stats?.mine || 0
   const theirs = stats?.theirs || 0
@@ -1138,7 +1182,7 @@ function ProfilePanel({ friend, me, status, stats, disappear, onMedia, onStarred
   return (
     <div className="profile-panel">
       <div className="profile-top">
-        <span className="avatar huge">{initials(friend.name)}</span>
+        <Avatar person={friend} className="huge" onClick={onPhoto} />
         <h2>{friend.name}</h2>
         <small>{status || ' '}</small>
       </div>

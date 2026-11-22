@@ -16,10 +16,20 @@ function preview(m: Record<string, any>) {
   if (m.view_once) return `① ${m.media_type === 'video' ? 'Video' : 'Photo'}`
   if (m.media_type === 'audio') return '🎤 Voice message'
   if (m.media_type === 'sticker') return '💟 Sticker'
-  if (m.media_type === 'image') return m.content ? `📷 ${m.content}` : '📷 Photo'
-  if (m.media_type === 'video') return m.content ? `🎥 ${m.content}` : '🎥 Video'
-  const t = String(m.content || '')
+  if (m.media_type === 'image') return m.content ? `📷 ${plain(m.content)}` : '📷 Photo'
+  if (m.media_type === 'video') return m.content ? `🎥 ${plain(m.content)}` : '🎥 Video'
+  const t = plain(String(m.content || ''))
   return t.length > 140 ? t.slice(0, 140) + '…' : t
+}
+
+// remove *bold* _italic_ __underline__ ~strike~ `code` markers; never reveal ||spoilers||
+function plain(t: string) {
+  return t
+    .replace(/```([\s\S]+?)```/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\|\|([^\n]+?)\|\|/g, '▒▒▒▒')
+    .replace(/(^|[\s([{"'|])__(?!\s)([^\n]*?[^\s])__(?=$|[\s)\]}.,!?;:"'|])/g, '$1$2')
+    .replace(/(^|[\s([{"'|])([*_~])(?!\s)([^\n]*?[^\s])\2(?=$|[\s)\]}.,!?;:"'|])/g, '$1$3')
 }
 
 Deno.serve(async (req) => {
