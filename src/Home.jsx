@@ -6,7 +6,7 @@ import Chat from './Chat'
 import Settings from './Settings'
 import { previewOf, useLongPress } from './Bubble'
 import { enablePush, logout, needsHomeScreen, pushState } from './push'
-import { useLocal } from './local'
+import { getLocal, setLocal, useLocal } from './local'
 
 const PAGE = 60
 const byTime = (a, b) => new Date(a.created_at) - new Date(b.created_at)
@@ -113,7 +113,11 @@ export default function Home({ session, appLocked }) {
       if (cancelled) return
       setMe((profiles || []).find((p) => p.id === myId) || null)
       setFriends(others)
-      setMessages(mergeMessages([], all))
+      // messages typed while offline (saved on this device) show up as "sending"
+      const queued = getLocal('outbox', []).filter((r) => r.sender_id === myId).map(({ _at, ...r }) => ({
+        reactions: {}, meta: {}, deleted_for: [], deleted_for_everyone: false, ...r, created_at: _at || new Date().toISOString(), _status: 'sending',
+      }))
+      setMessages(mergeMessages([], [...all, ...queued]))
       setHasMore(more)
       if (prefRes.error) setPrefsReady(false)
       else setPrefs(Object.fromEntries((prefRes.data || []).map((p) => [p.friend_id, p])))
@@ -152,7 +156,8 @@ export default function Home({ session, appLocked }) {
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (!payload || payload.to !== myId) return
         const from = payload.from
-        setTyping((t) => ({ ...t, [from]: true }))
+        const kind = payload.kind === 'recording' ? 'recording' : payload.kind === 'stop' ? false : 'typing'
+        setTyping((t) => ({ ...t, [from]: kind }))
         clearTimeout(typingTimers.current[from])
         typingTimers.current[from] = setTimeout(() => setTyping((t) => ({ ...t, [from]: false })), 3000)
       })
@@ -162,11 +167,11 @@ export default function Home({ session, appLocked }) {
     return () => { supabase.removeChannel(ch); roomRef.current = null }
   }, [myId])
 
-  const sendTyping = useCallback((to) => {
+  const sendTyping = useCallback((to, kind = 'typing') => {
     const now = Date.now()
-    if (now - lastTypingSent.current < 2000) return
-    lastTypingSent.current = now
-    roomRef.current?.send({ type: 'broadcast', event: 'typing', payload: { from: myId, to } })
+    if (kind !== 'stop' && now - lastTypingSent.current < 2000) return
+    lastTypingSent.current = kind === 'stop' ? 0 : now
+    roomRef.current?.send({ type: 'broadcast', event: 'typing', payload: { from: myId, to, kind } })
   }, [myId])
 
   // ---------- visibility: online/offline, last seen, catch up, re-lock ----------
@@ -240,6 +245,67 @@ export default function Home({ session, appLocked }) {
     if (history.state?.chat) history.back()
     else setOpenId(null)
   }
+
+  // ---------- offline sending: keep unsent messages and send them when the internet is back ----------
+  const [netOnline, setNetOnline] = useState(navigator.onLine)
+  const pendingFiles = useRef(new Map()) // id → { file, row } (photos/voice wait in memory while the app is open)
+  const flushing = useRef(false)
+
+  const isNetworkError = useCallback(
+    (e) => !navigator.onLine || /failed to fetch|network|load failed|timeout|fetch failed|ERR_/i.test(String(e?.message || e)),
+    []
+  )
+
+  const queueSend = useCallback((row, file) => {
+    if (file) pendingFiles.current.set(row.id, { file, row })
+    else setLocal('outbox', [...getLocal('outbox', []).filter((r) => r.id !== row.id), { ...row, _at: new Date().toISOString() }])
+  }, [])
+
+  const flushOutbox = useCallback(async () => {
+    if (flushing.current || !navigator.onLine) return
+    flushing.current = true
+    try {
+      // 1) photos / voice notes that could not upload
+      for (const [id, { file, row }] of [...pendingFiles.current]) {
+        const ext = (file.name?.split('.').pop() || 'bin').toLowerCase().slice(0, 5)
+        const path = `${myId}/${row.id}.${ext}`
+        const up = await supabase.storage.from('media').upload(path, file, { contentType: file.type, upsert: false })
+        if (up.error && isNetworkError(up.error)) break
+        pendingFiles.current.delete(id)
+        if (up.error && !/exists|duplicate/i.test(up.error.message)) {
+          setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, _status: 'failed' } : m)))
+          continue
+        }
+        queueSend({ ...row, media_path: path })
+      }
+      // 2) messages waiting to be saved
+      for (const { _at, ...row } of getLocal('outbox', [])) {
+        const { data, error } = await supabase.from('messages').upsert(row, { onConflict: 'id', ignoreDuplicates: true }).select()
+        if (error && isNetworkError(error)) break
+        setLocal('outbox', getLocal('outbox', []).filter((r) => r.id !== row.id))
+        if (error) setMessages((prev) => prev.map((m) => (m.id === row.id ? { ...m, _status: 'failed' } : m)))
+        else {
+          const rows = Array.isArray(data) ? data : data ? [data] : []
+          if (rows.length) setMessages((prev) => mergeMessages(prev, rows))
+          else setMessages((prev) => prev.map((m) => (m.id === row.id ? { ...m, _status: undefined } : m)))
+        }
+      }
+    } finally {
+      flushing.current = false
+    }
+  }, [myId, isNetworkError, mergeMessages, queueSend])
+
+  useEffect(() => {
+    const on = () => { setNetOnline(true); flushOutbox() }
+    const off = () => setNetOnline(false)
+    window.addEventListener('online', on)
+    window.addEventListener('offline', off)
+    flushOutbox()
+    const t = setInterval(() => {
+      if (getLocal('outbox', []).length || pendingFiles.current.size) flushOutbox()
+    }, 15000)
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); clearInterval(t) }
+  }, [flushOutbox])
 
   // ---------- disappearing messages: hide expired ones, clean them up ----------
   const [nowTick, setNowTick] = useState(Date.now())
@@ -411,6 +477,7 @@ export default function Home({ session, appLocked }) {
             onChange={updateMe}
             flash={flash}
             hasLock={!!lockHash}
+            friends={friends}
             push={push}
             onPushOn={turnOnPush}
             onPushOff={async () => { const { disablePush } = await import('./push'); await disablePush(); setPush('off'); flash('Notifications off on this device') }}
@@ -418,6 +485,7 @@ export default function Home({ session, appLocked }) {
           />
         ) : (
           <>
+            {!netOnline && <div className="offline-bar top">📶 You're offline. Messages will send when you're back online.</div>}
             <header className="list-header">
               {view === 'all' ? (
                 <h1>Chit Chat</h1>
@@ -529,7 +597,7 @@ export default function Home({ session, appLocked }) {
             hasMore={!!hasMore[openFriend.id]}
             loadOlder={loadOlder}
             online={online.has(openFriend.id)}
-            typing={!!typing[openFriend.id]}
+            typing={typing[openFriend.id] || false}
             sendTyping={sendTyping}
             visible={visible && !appLocked}
             pref={prefs[openFriend.id]}
@@ -537,6 +605,9 @@ export default function Home({ session, appLocked }) {
             onBack={closeChat}
             chatActions={chatActions(openFriend.id)}
             flash={flash}
+            queueSend={queueSend}
+            isNetworkError={isNetworkError}
+            netOnline={netOnline}
           />
         ) : (
           <div className="pane-empty">
@@ -581,7 +652,7 @@ function ChatRow({ row, myId, me, active, typing, onOpen, onMenu }) {
         </div>
         <div className="chat-row-bottom">
           <span className={'chat-row-preview' + (typing ? ' typing' : '')}>
-            {typing ? 'typing…' : last ? (
+            {typing ? (typing === 'recording' ? '🎤 recording audio…' : 'typing…') : last ? (
               <>
                 {mine && !last.deleted_for_everyone && last.media_type !== 'system' && <Ticks status={st} />}
                 {previewOf(last)}

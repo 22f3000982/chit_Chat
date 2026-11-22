@@ -4,7 +4,7 @@ A private, WhatsApp-style chat for two people: **Sneha** and **Axon**.
 
 Features: WhatsApp-style chat list (pin, archive, chat lock with secret code, hidden chats, unread badges, search) · name + password login · real-time messages · ✓ sent / ✓✓ delivered / blue ✓✓ read ·
 online, typing… and last seen · hide last seen · turn off read receipts · photos & videos (up to 50 MB) ·
-reply to a message (swipe right) · emoji reactions · edit messages for 15 min (shows "Edited") · paste or drag-and-drop photos · voice messages · speak-to-type (Hindi/English) · stickers · view once · disappearing messages · pin & star messages · search in chat · media gallery · dark mode · chat wallpaper · app lock PIN · phone notifications · delete for me / delete for everyone (also removes the file) · emoji · change password ·
+reply to a message (swipe right) · emoji reactions · edit messages for 15 min (shows "Edited") · paste or drag-and-drop photos · voice messages · speak-to-type (Hindi/English) · stickers · view once · disappearing messages · pin & star messages · search in chat · media gallery · dark mode · chat wallpaper · app lock PIN · phone notifications · message info · typing / recording indicator · contact info with message stats · scheduled messages · storage meter · offline sending · *bold* _italic_ ~strike~ `code` · send many photos at once (albums) · HD photos · delete for me / delete for everyone (also removes the file) · emoji · change password ·
 installable on the phone home screen.
 
 Built with React + Vite, Supabase (login, database, realtime, storage) and hosted on Vercel.
@@ -22,7 +22,8 @@ Built with React + Vite, Supabase (login, database, realtime, storage) and hoste
 6. **Phone notifications**: run [`supabase/update_4_push.sql`](supabase/update_4_push.sql) and create an Edge Function
    named `notify` from [`supabase/functions/notify/index.ts`](supabase/functions/notify/index.ts) (JWT verification off),
    using the same secret in both and your VAPID keys (`npx web-push generate-vapid-keys`; put the public key in `src/config.js`).
-7. **Authentication → Sign In / Providers → Email**: turn **off** "Allow new users to sign up" so nobody else can make an account.
+7. **SQL Editor → New query** → paste [`supabase/update_5_info_schedule.sql`](supabase/update_5_info_schedule.sql) → **Run** (message stats + scheduled messages).
+8. **Authentication → Sign In / Providers → Email**: turn **off** "Allow new users to sign up" so nobody else can make an account.
 
 ### 2. Vercel
 1. vercel.com → **Add New → Project** → import this GitHub repo.

@@ -2,8 +2,10 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { supabase } from './supabase'
 import { MAX_VIDEO_MB } from './config'
 import { compressImage, dayKey, dayLabel, EMOJIS, initials, lastSeenText, signedUrl, timeOf } from './utils'
-import { Back, Check, Clip, Close, Dots, Down, Download, Send, Smile } from './icons'
-import Bubble, { previewOf } from './Bubble'
+import { Back, Check, Clip, Close, Dots, Down, Send, Smile } from './icons'
+import Bubble, { AlbumBubble, isAlbumable, previewOf } from './Bubble'
+import MediaPreview from './MediaPreview'
+import Viewer from './Viewer'
 import { useDictation, useRecorder, fmtDur } from './Voice'
 import { StickerPicker, photoToSticker } from './Stickers'
 import { useLocal, wallpaperStyle } from './local'
@@ -29,7 +31,7 @@ const SearchIcon = () => (
 // One conversation. Shared data (messages, presence, prefs) lives in Home.
 export default function Chat({
   me, friend, messages, setMessages, hasMore, loadOlder, online, typing, sendTyping,
-  visible, pref, updatePref, onBack, chatActions, flash, mergeMessages,
+  visible, pref, updatePref, onBack, chatActions, flash, mergeMessages, queueSend, isNetworkError, netOnline,
 }) {
   const myId = me.id
   const fid = friend.id
@@ -41,7 +43,7 @@ export default function Chat({
   const [emojiTab, setEmojiTab] = useState('emoji')
   const [menu, setMenu] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
-  const [picked, setPicked] = useState(null)
+  const [picked, setPicked] = useState(null) // array of files to preview
   const [caption, setCaption] = useState('')
   const [viewer, setViewer] = useState(null)
   const [newCount, setNewCount] = useState(0)
@@ -63,6 +65,11 @@ export default function Chat({
   const [pinnedFetched, setPinnedFetched] = useState([])
   const [pinIdx, setPinIdx] = useState(0)
   const [sysFetched, setSysFetched] = useState(null)
+  const [infoFor, setInfoFor] = useState(null)
+  const [stats, setStats] = useState(null)
+  const [scheduled, setScheduled] = useState([])
+  const [scheduleOpen, setScheduleOpen] = useState(null) // { text } when the schedule dialog is open
+  const [scheduledList, setScheduledList] = useState(false)
 
   const [wall] = useLocal('wallpaper', { type: 'default' })
   const [speechLang] = useLocal('speechLang', 'hi-IN')
@@ -90,6 +97,24 @@ export default function Chat({
     supabase.from('messages').select('*').or(pair).eq('media_type', 'system').order('created_at', { ascending: false }).limit(1)
       .then(({ data }) => data?.[0] && setSysFetched(data[0]))
   }, [fid])
+
+  useEffect(() => {
+    supabase.from('scheduled_messages').select('*').eq('receiver_id', fid).order('send_at')
+      .then(({ data }) => data && setScheduled(data))
+  }, [fid])
+  useEffect(() => {
+    if (!scheduled.length) return
+    const ids = new Set(messages.map((m) => m.id))
+    if (scheduled.some((x) => ids.has(x.id))) setScheduled((list) => list.filter((x) => !ids.has(x.id)))
+  }, [messages])
+
+  // tell the friend I'm recording a voice note
+  useEffect(() => {
+    if (!recorder.recording) return
+    sendTyping(fid, 'recording')
+    const t = setInterval(() => sendTyping(fid, 'recording'), 2100)
+    return () => { clearInterval(t); sendTyping(fid, 'stop') }
+  }, [recorder.recording])
 
   const disappearSecs = useMemo(() => {
     const sys = [sysFetched, ...messages.filter((m) => m.media_type === 'system')].filter(Boolean)
@@ -194,8 +219,10 @@ export default function Chat({
   const markFailed = (id) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, _status: 'failed' } : m)))
 
   async function insertRow(row) {
+    if (!navigator.onLine) return queueSend(row)
     const { data, error } = await supabase.from('messages').insert(row).select().single()
     if (error) {
+      if (isNetworkError(error)) return queueSend(row) // will be sent when the internet is back
       if (/column|schema cache/.test(error.message)) flash('Run update_3_more_features.sql in Supabase first')
       return markFailed(row.id)
     }
@@ -219,12 +246,17 @@ export default function Chat({
     await insertRow(row)
   }
 
-  async function uploadAndSend(file, row, local) {
-    addOptimistic(row, local)
+  async function uploadAndSend(file, row, local, skipOptimistic = false) {
+    if (!skipOptimistic) addOptimistic(row, local)
+    if (!navigator.onLine) return queueSend(row, file)
     const ext = (file.name?.split('.').pop() || file.type.split('/')[1] || 'bin').replace(/;.*/, '').toLowerCase().slice(0, 5)
     const path = `${myId}/${row.id}.${ext}`
     const up = await supabase.storage.from('media').upload(path, file, { contentType: file.type, upsert: false })
-    if (up.error) { flash('Upload failed: ' + up.error.message); return markFailed(row.id) }
+    if (up.error) {
+      if (isNetworkError(up.error)) return queueSend(row, file)
+      flash('Upload failed: ' + up.error.message)
+      return markFailed(row.id)
+    }
     await insertRow({ ...row, media_path: path })
   }
 
@@ -275,47 +307,66 @@ export default function Chat({
     }
   }
 
-  // ---------- photos / videos: pick, paste or drop ----------
+  // ---------- photos / videos: pick, paste or drop (many at once) ----------
   function pickFile(e) {
-    const file = e.target.files?.[0]
+    const files = [...(e.target.files || [])]
     e.target.value = ''
-    handleFile(file)
+    handleFiles(files)
   }
 
   function onPaste(e) {
-    const item = [...(e.clipboardData?.items || [])].find((i) => i.kind === 'file' && /^(image|video)\//.test(i.type))
-    const file = item?.getAsFile()
-    if (!file) return
+    const files = [...(e.clipboardData?.items || [])].filter((i) => i.kind === 'file' && /^(image|video)\//.test(i.type)).map((i) => i.getAsFile()).filter(Boolean)
+    if (!files.length) return
     e.preventDefault()
-    handleFile(file)
+    handleFiles(files)
   }
 
   function onDrop(e) {
     e.preventDefault()
     setDragging(false)
-    handleFile(e.dataTransfer?.files?.[0])
+    handleFiles([...(e.dataTransfer?.files || [])])
   }
 
-  function handleFile(file) {
-    if (!file) return
+  function handleFiles(files) {
+    if (!files.length) return
     if (editing) cancelEdit()
-    const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('image/') ? 'image' : null
-    if (!kind) return flash('Only photos and videos can be sent')
-    if (kind === 'video' && file.size > MAX_VIDEO_MB * 1024 * 1024) return flash(`Video is too big (max ${MAX_VIDEO_MB} MB)`)
+    const items = []
+    let skipped = 0
+    for (const file of files) {
+      const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('image/') ? 'image' : null
+      if (!kind) { skipped++; continue }
+      if (kind === 'video' && file.size > MAX_VIDEO_MB * 1024 * 1024) { flash(`A video is too big (max ${MAX_VIDEO_MB} MB)`); continue }
+      items.push({ file, kind, url: URL.createObjectURL(file) })
+    }
+    if (skipped) flash('Only photos and videos can be sent')
+    if (!items.length) return
     setCaption(text)
-    setPicked({ file, kind, url: URL.createObjectURL(file), viewOnce: false })
+    setPicked(items.slice(0, 30))
   }
 
-  async function sendMedia() {
-    if (!picked) return
-    const { kind, url, viewOnce } = picked
-    let file = picked.file
+  async function sendMedia(list, { viewOnce, hd }) {
     setPicked(null)
-    const row = baseRow({ content: viewOnce ? null : caption.trim() || null, media_type: kind, view_once: viewOnce })
     setCaption('')
     setText('')
-    if (kind === 'image') file = await compressImage(file)
-    await uploadAndSend(file, row, { _localUrl: url })
+    const replyId = replyTo?.id || null
+    setReplyTo(null)
+    const exp = expiry()
+    // show them all right away, in order, then upload one by one
+    const jobs = list.map((it, i) => {
+      const row = {
+        id: crypto.randomUUID(), sender_id: myId, receiver_id: fid,
+        reply_to: i === 0 ? replyId : null,
+        content: viewOnce ? null : it.caption?.trim() || null,
+        media_type: it.kind, view_once: !!viewOnce,
+      }
+      if (exp) row.expires_at = exp
+      addOptimistic(row, { _localUrl: it.url })
+      return { row, it }
+    })
+    for (const { row, it } of jobs) {
+      const file = it.kind === 'image' ? await compressImage(it.file, hd ? 2560 : 1600, hd ? 0.9 : 0.8) : it.file
+      await uploadAndSend(file, row, null, true)
+    }
   }
 
   function retry(m) {
@@ -327,7 +378,7 @@ export default function Chat({
   async function openViewOnce(m) {
     try {
       const url = await signedUrl(m.media_path)
-      setViewer({ url, kind: m.media_type, viewOnce: m })
+      setViewer({ items: [{ url, kind: m.media_type }], index: 0, viewOnce: m })
     } catch {
       flash('Could not open')
     }
@@ -488,6 +539,54 @@ export default function Chat({
     setPanelItems((data || []).filter((m) => !(m.deleted_for || []).includes(myId)))
   }
 
+  // ---------- scheduled messages ----------
+  async function schedule(content, when) {
+    setScheduleOpen(null)
+    const send_at = when.toISOString()
+    const row = { id: crypto.randomUUID(), sender_id: myId, receiver_id: fid, content, send_at }
+    const { error } = await supabase.from('scheduled_messages').insert(row)
+    if (error) return flash(/relation|schema cache/.test(error.message) ? 'Run update_5_info_schedule.sql in Supabase first' : 'Could not schedule: ' + error.message)
+    setScheduled((l) => [...l, row].sort((a, b) => new Date(a.send_at) - new Date(b.send_at)))
+    setText('')
+    if (textRef.current) textRef.current.style.height = 'auto'
+    flash('⏰ Scheduled for ' + fullTime(send_at))
+  }
+
+  async function cancelScheduled(x) {
+    setScheduled((l) => l.filter((y) => y.id !== x.id))
+    await supabase.from('scheduled_messages').delete().eq('id', x.id)
+  }
+
+  async function sendScheduledNow(x) {
+    await cancelScheduled(x)
+    const row = { id: crypto.randomUUID(), sender_id: myId, receiver_id: fid, content: x.content }
+    const exp = expiry()
+    if (exp) row.expires_at = exp
+    addOptimistic(row)
+    await insertRow(row)
+  }
+
+  // long-press the send button to schedule
+  const sendPress = useRef(null)
+  const sendBtnHandlers = {
+    onPointerDown: () => {
+      if (!text.trim() || editing) return
+      sendPress.current = setTimeout(() => { sendPress.current = 'fired'; navigator.vibrate?.(20); setScheduleOpen({ text: text.trim() }) }, 500)
+    },
+    onPointerUp: () => { if (sendPress.current !== 'fired') clearTimeout(sendPress.current) },
+    onPointerLeave: () => { if (sendPress.current !== 'fired') clearTimeout(sendPress.current) },
+    onContextMenu: (e) => { e.preventDefault(); if (text.trim() && !editing) setScheduleOpen({ text: text.trim() }) },
+    onClick: (e) => { if (sendPress.current === 'fired') { sendPress.current = null; e.preventDefault(); return } sendText() },
+  }
+
+  async function openProfile() {
+    setHeaderMenu(false)
+    setPanel('profile')
+    setStats(null)
+    const { data, error } = await supabase.rpc('chat_stats', { friend: fid })
+    setStats(error ? { error: true } : data)
+  }
+
   // ---------- helpers ----------
   const status = (m) => {
     if (m._status) return m._status
@@ -495,17 +594,17 @@ export default function Chat({
     if (m.delivered_at) return 'delivered'
     return 'sent'
   }
-  const headerStatus = typing ? 'typing…' : online ? 'online' : friend.hide_last_seen || me.hide_last_seen ? '' : lastSeenText(friend.last_seen)
+  const headerStatus = typing === 'recording' ? 'recording audio…' : typing ? 'typing…' : online ? 'online' : friend.hide_last_seen || me.hide_last_seen ? '' : lastSeenText(friend.last_seen)
   const findMsg = (id) => messages.find((m) => m.id === id)
   const nameOf = (id) => (id === myId ? 'You' : friend.name)
 
-  const openViewer = async (m) => {
-    try {
-      const url = m._localUrl || (await signedUrl(m.media_path))
-      setViewer({ url, kind: m.media_type, name: m.media_path?.split('/').pop() || 'media' })
-    } catch {
-      flash('Could not open file')
-    }
+  // open a photo/video; swiping moves through all photos & videos in the list
+  const openViewer = (m, list = messages) => {
+    const media = list.filter((x) => (x.media_type === 'image' || x.media_type === 'video') && !x.view_once && !x.deleted_for_everyone && (x.media_path || x._localUrl))
+    const items = media.map((x) => ({ id: x.id, url: x._localUrl, path: x.media_path, kind: x.media_type, name: x.media_path?.split('/').pop() }))
+    const index = Math.max(0, items.findIndex((x) => x.id === m.id))
+    if (!items.length) return flash('Could not open file')
+    setViewer({ items, index })
   }
 
   const canReact = (m) => !m.deleted_for_everyone && !m._status && m.media_type !== 'system'
@@ -532,8 +631,8 @@ export default function Chat({
       ) : (
         <header className="chat-header">
           <button className="icon-btn back-btn" onClick={onBack} aria-label="Back to chats"><Back /></button>
-          <span className="avatar">{initials(friend.name)}</span>
-          <div className="who-info">
+          <span className="avatar" onClick={openProfile} role="button">{initials(friend.name)}</span>
+          <div className="who-info" onClick={openProfile} role="button" title="View contact info">
             <div className="who-name">
               {friend.name} {pref?.locked && <span title="Locked chat">🔒</span>} {disappearSecs > 0 && <span title={'Disappearing: ' + disappearLabel(disappearSecs)}>⏳</span>}
             </div>
@@ -566,13 +665,33 @@ export default function Chat({
       <main className="messages" ref={listRef} onScroll={onScroll} onClick={() => setShowEmoji(false)}>
         {hasMore && <div className="load-more">Scroll up for older messages</div>}
         <div className="empty-note">🔒 Only you and {friend.name} can read this chat.</div>
-        {messages.map((m) => {
-          const k = dayKey(m.created_at)
+        {groupRows(messages).map((g) => {
+          const m = g.items ? g.items[g.items.length - 1] : g
+          const lead = g.items ? g.items[0] : g
+          const k = dayKey(lead.created_at)
           const showDay = k !== prevDay
           const mine = m.sender_id === myId
           const first = showDay || prevSender !== m.sender_id || m.media_type === 'system'
           prevDay = k
           prevSender = m.media_type === 'system' ? null : m.sender_id
+          if (g.items) {
+            return (
+              <Fragment key={lead.id}>
+                {showDay && <div className="day"><span>{dayLabel(lead.created_at)}</span></div>}
+                <AlbumBubble
+                  msgs={g.items}
+                  mine={mine}
+                  first={first}
+                  status={mine ? status(m) : null}
+                  starredIds={starred}
+                  highlight={g.items.some((x) => x.id === hit)}
+                  onOpen={(i) => openViewer(g.items[i])}
+                  onMenu={(x) => setMenu(x)}
+                  onMediaLoad={onMediaLoad}
+                />
+              </Fragment>
+            )
+          }
           const reply = m.reply_to ? findMsg(m.reply_to) : null
           return (
             <Fragment key={m.id}>
@@ -598,6 +717,14 @@ export default function Chat({
             </Fragment>
           )
         })}
+        {typing && (
+          <div className="row theirs first typing-row">
+            <div className="bubble typing-bubble" aria-label={typing === 'recording' ? 'recording audio' : 'typing'}>
+              {typing === 'recording' ? <span className="typing-mic">🎤</span> : null}
+              <i /><i /><i />
+            </div>
+          </div>
+        )}
       </main>
 
       {(newCount > 0 || showDown) && (
@@ -626,6 +753,12 @@ export default function Chat({
       )}
 
       <footer className="composer">
+        {!netOnline && <div className="offline-bar">📶 No internet. Messages will send automatically when you're back online.</div>}
+        {scheduled.length > 0 && !editing && (
+          <button className="scheduled-bar" onClick={() => setScheduledList(true)}>
+            ⏰ {scheduled.length} scheduled message{scheduled.length > 1 ? 's' : ''} · next {fullTime(scheduled[0].send_at)}
+          </button>
+        )}
         {editing && (
           <div className="reply-bar">
             <div className="quote edit">
@@ -679,12 +812,12 @@ export default function Chat({
                 <button className={'icon-btn dark speak' + (dictation.listening ? ' on' : '')} onClick={dictation.toggle} aria-label={dictation.listening ? 'Stop voice typing' : 'Voice typing'} title="Speak to type">🗣️</button>
               )}
               {!editing && <button className="icon-btn dark" onClick={() => fileInput.current?.click()} aria-label="Attach photo or video"><Clip /></button>}
-              <input ref={fileInput} type="file" accept="image/*,video/*" hidden onChange={pickFile} />
+              <input ref={fileInput} type="file" accept="image/*,video/*" multiple hidden onChange={pickFile} />
             </div>
             {showMic ? (
               <button className="send-btn" onClick={startRecording} aria-label="Record voice message"><Mic /></button>
             ) : (
-              <button className="send-btn" onClick={sendText} disabled={!text.trim() && !editing?.media_type} aria-label={editing ? 'Save edit' : 'Send'}>{editing ? <Check /> : <Send />}</button>
+              <button className="send-btn" {...(editing ? { onClick: sendText } : sendBtnHandlers)} disabled={!text.trim() && !editing?.media_type} aria-label={editing ? 'Save edit' : 'Send'} title={editing ? 'Save' : 'Send (hold to schedule)'}>{editing ? <Check /> : <Send />}</button>
             )}
           </div>
         )}
@@ -695,7 +828,9 @@ export default function Chat({
         <div className="overlay" onClick={() => setHeaderMenu(false)}>
           <div className="sheet" onClick={(e) => e.stopPropagation()}>
             <div className="sheet-title">{friend.name}</div>
+            <button onClick={openProfile}>👤 Contact info &amp; stats</button>
             <button onClick={() => { setHeaderMenu(false); setSearchOpen(true) }}>🔍 Search</button>
+            <button onClick={() => { setHeaderMenu(false); setScheduleOpen({ text: text.trim() }) }}>⏰ Schedule message</button>
             <button onClick={() => openPanel('media')}>🖼️ Media</button>
             <button onClick={() => openPanel('starred')}>⭐ Starred messages</button>
             <button onClick={() => { setHeaderMenu(false); setDisappearOpen(true) }}>⏳ Disappearing messages <small className="sheet-side">{disappearLabel(disappearSecs)}</small></button>
@@ -725,15 +860,27 @@ export default function Chat({
         <div className="side-panel">
           <header className="chat-header">
             <button className="icon-btn" onClick={() => setPanel(null)} aria-label="Back"><Back /></button>
-            <div className="who-name">{panel === 'media' ? 'Media' : 'Starred messages'}</div>
+            <div className="who-name">{panel === 'media' ? 'Media' : panel === 'profile' ? 'Contact info' : 'Starred messages'}</div>
           </header>
-          {!panelItems ? (
+          {panel === 'profile' ? (
+            <ProfilePanel
+              friend={friend}
+              me={me}
+              status={headerStatus}
+              stats={stats}
+              disappear={disappearLabel(disappearSecs)}
+              onMedia={() => openPanel('media')}
+              onStarred={() => openPanel('starred')}
+              onSearch={() => { setPanel(null); setSearchOpen(true) }}
+              onDisappear={() => setDisappearOpen(true)}
+            />
+          ) : !panelItems ? (
             <div className="center-fill"><div className="spinner" /></div>
           ) : !panelItems.length ? (
             <p className="list-empty">{panel === 'media' ? 'No photos or videos yet' : 'No starred messages. Long-press a message → ⭐ Star.'}</p>
           ) : panel === 'media' ? (
             <div className="gallery">
-              {panelItems.map((m) => <GalleryItem key={m.id} m={m} onOpen={() => openViewer(m)} />)}
+              {panelItems.map((m) => <GalleryItem key={m.id} m={m} onOpen={() => openViewer(m, [...panelItems].reverse())} />)}
             </div>
           ) : (
             <div className="star-list">
@@ -768,6 +915,9 @@ export default function Chat({
               </>
             )}
             {canEdit(menu) && <button onClick={() => { const m = menu; setMenu(null); startEdit(m) }}>✏️ Edit</button>}
+            {menu.sender_id === myId && !menu._status && menu.media_type !== 'system' && (
+              <button onClick={() => { setInfoFor(menu); setMenu(null) }}>ℹ️ Info</button>
+            )}
             {menu.content && !menu.deleted_for_everyone && (
               <button onClick={() => { navigator.clipboard?.writeText(menu.content); setMenu(null); flash('Copied') }}>📋 Copy</button>
             )}
@@ -819,45 +969,53 @@ export default function Chat({
       )}
 
       {picked && (
-        <div className="preview">
-          <div className="preview-top">
-            <button className="icon-btn" onClick={() => { URL.revokeObjectURL(picked.url); setPicked(null) }} aria-label="Cancel"><Close /></button>
-          </div>
-          <div className="preview-media">
-            {picked.kind === 'image' ? <img src={picked.url} alt="" /> : <video src={picked.url} controls playsInline />}
-          </div>
-          <div className="preview-bottom">
-            <input
-              placeholder={picked.viewOnce ? 'View once: no caption' : 'Add a caption…'}
-              value={picked.viewOnce ? '' : caption}
-              disabled={picked.viewOnce}
-              onChange={(e) => setCaption(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && sendMedia()}
-              autoFocus
-            />
-            <button
-              className={'vo-toggle' + (picked.viewOnce ? ' on' : '')}
-              onClick={() => { setPicked((p) => ({ ...p, viewOnce: !p.viewOnce })); flash(picked.viewOnce ? 'View once off' : 'View once on: can be opened only one time') }}
-              aria-label="View once"
-              title="View once"
-            >①</button>
-            <button className="send-btn" onClick={sendMedia} aria-label="Send"><Send /></button>
-          </div>
-        </div>
+        <MediaPreview
+          items={picked}
+          initialCaption={caption}
+          flash={flash}
+          onCancel={() => setPicked(null)}
+          onSend={(list, opts) => sendMedia(list, opts)}
+        />
       )}
 
-      {viewer && (
-        <div className="preview" onClick={closeViewer}>
-          <div className="preview-top" onClick={(e) => e.stopPropagation()}>
-            <button className="icon-btn" onClick={closeViewer} aria-label="Close"><Back /></button>
-            {viewer.viewOnce ? (
-              <span className="vo-note">① View once</span>
-            ) : (
-              <a className="icon-btn" href={viewer.url} download={viewer.name} target="_blank" rel="noreferrer" aria-label="Download"><Download /></a>
-            )}
+      {viewer && <Viewer items={viewer.items} index={viewer.index} viewOnce={!!viewer.viewOnce} onClose={closeViewer} />}
+
+      {infoFor && (() => {
+        const m = messages.find((x) => x.id === infoFor.id) || infoFor
+        const readHidden = !me.read_receipts
+        return (
+          <div className="overlay" onClick={() => setInfoFor(null)}>
+            <div className="sheet info-sheet" onClick={(e) => e.stopPropagation()}>
+              <div className="sheet-title">ℹ️ Message info</div>
+              <div className="info-preview">{previewOf(m) || 'Message'}</div>
+              <div className="info-row"><span className="tick-ico read">✓✓</span><div><b>Read</b><small>{readHidden ? 'Read receipts are off' : m.read_at ? fullTime(m.read_at) : '—'}</small></div></div>
+              <div className="info-row"><span className="tick-ico">✓✓</span><div><b>Delivered</b><small>{m.delivered_at ? fullTime(m.delivered_at) : '—'}</small></div></div>
+              <div className="info-row"><span className="tick-ico">✓</span><div><b>Sent</b><small>{fullTime(m.created_at)}</small></div></div>
+              {m.view_once && <div className="info-row"><span className="tick-ico">①</span><div><b>Opened</b><small>{m.viewed_at ? fullTime(m.viewed_at) : 'Not yet'}</small></div></div>}
+              {m.edited_at && <div className="info-row"><span className="tick-ico">✏️</span><div><b>Edited</b><small>{fullTime(m.edited_at)}</small></div></div>}
+              {m.expires_at && <div className="info-row"><span className="tick-ico">⏳</span><div><b>Disappears</b><small>{fullTime(m.expires_at)}</small></div></div>}
+            </div>
           </div>
-          <div className="preview-media" onClick={(e) => e.stopPropagation()} onContextMenu={(e) => viewer.viewOnce && e.preventDefault()}>
-            {viewer.kind === 'image' ? <img src={viewer.url} alt="" draggable={!viewer.viewOnce} /> : <video src={viewer.url} controls autoPlay playsInline controlsList={viewer.viewOnce ? 'nodownload' : undefined} />}
+        )
+      })()}
+
+      {scheduleOpen && <ScheduleDialog initial={scheduleOpen.text} onClose={() => setScheduleOpen(null)} onSchedule={schedule} />}
+
+      {scheduledList && (
+        <div className="overlay" onClick={() => setScheduledList(false)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-title">⏰ Scheduled messages</div>
+            {!scheduled.length && <p className="sheet-note">Nothing scheduled.</p>}
+            {scheduled.map((x) => (
+              <div key={x.id} className="sched-item">
+                <div className="sched-main">
+                  <small>{fullTime(x.send_at)}</small>
+                  <span>{x.content}</span>
+                </div>
+                <button className="link" onClick={() => sendScheduledNow(x)}>Send now</button>
+                <button className="link danger-text" onClick={() => cancelScheduled(x)}>Cancel</button>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -893,5 +1051,129 @@ function GalleryItem({ m, onOpen }) {
         </>
       )}
     </button>
+  )
+}
+
+// "Sun, 22 Nov · 8:15 AM"
+function fullTime(iso) {
+  const d = new Date(iso)
+  const day = d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
+  return `${day} · ${timeOf(iso)}`
+}
+
+// photos/videos sent together (same person, within 2 minutes, no caption) become one album
+function groupRows(messages) {
+  const out = []
+  for (const m of messages) {
+    const prev = out[out.length - 1]
+    const prevLast = prev?.items ? prev.items[prev.items.length - 1] : prev
+    if (
+      prevLast && isAlbumable(m) && isAlbumable(prevLast) && prevLast.sender_id === m.sender_id &&
+      dayKey(prevLast.created_at) === dayKey(m.created_at) &&
+      Math.abs(new Date(m.created_at) - new Date(prevLast.created_at)) < 120000 &&
+      !Object.keys(m.reactions || {}).length && !Object.keys(prevLast.reactions || {}).length
+    ) {
+      if (prev.items) prev.items.push(m)
+      else out[out.length - 1] = { items: [prevLast, m] }
+    } else out.push(m)
+  }
+  return out
+}
+
+function ScheduleDialog({ initial = '', onClose, onSchedule }) {
+  const toLocal = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+  const [text, setText] = useState(initial)
+  const [when, setWhen] = useState(() => toLocal(new Date(Date.now() + 60 * 60000)))
+  const [err, setErr] = useState('')
+
+  const at = (h, m = 0, addDays = 0) => {
+    const d = new Date()
+    d.setDate(d.getDate() + addDays)
+    d.setHours(h, m, 0, 0)
+    if (d <= new Date()) d.setDate(d.getDate() + 1)
+    return d
+  }
+  const quick = [
+    ['In 1 hour', new Date(Date.now() + 3600000)],
+    ['Tonight 12:00 AM', at(0, 0, 1)],
+    ['Tomorrow 7 AM', at(7, 0, 1)],
+    ['Tomorrow 9 AM', at(9, 0, 1)],
+  ]
+
+  function submit(e) {
+    e.preventDefault()
+    const d = new Date(when)
+    if (!text.trim()) return setErr('Write a message first')
+    if (isNaN(d) || d.getTime() < Date.now() + 60000) return setErr('Pick a time at least 1 minute from now')
+    onSchedule(text.trim(), d)
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <form className="dialog schedule-dialog" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <p>⏰ Schedule message</p>
+        <textarea value={text} onChange={(e) => { setText(e.target.value); setErr('') }} placeholder="Message to send later" rows={3} autoFocus={!initial} />
+        <div className="quick-times">
+          {quick.map(([label, d]) => (
+            <button type="button" key={label} className={toLocal(d) === when ? 'on' : ''} onClick={() => { setWhen(toLocal(d)); setErr('') }}>{label}</button>
+          ))}
+        </div>
+        <input type="datetime-local" value={when} min={toLocal(new Date())} onChange={(e) => { setWhen(e.target.value); setErr('') }} />
+        <small className="muted">It will be sent even if your phone is off.</small>
+        {err && <div className="error">{err}</div>}
+        <div className="dialog-actions row">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit">Schedule</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function ProfilePanel({ friend, me, status, stats, disappear, onMedia, onStarred, onSearch, onDisappear }) {
+  const n = (k) => (stats && !stats.error ? (stats[k] ?? 0).toLocaleString() : '…')
+  const mine = stats?.mine || 0
+  const theirs = stats?.theirs || 0
+  const total = mine + theirs || 1
+  return (
+    <div className="profile-panel">
+      <div className="profile-top">
+        <span className="avatar huge">{initials(friend.name)}</span>
+        <h2>{friend.name}</h2>
+        <small>{status || ' '}</small>
+      </div>
+
+      {stats?.error ? (
+        <p className="sheet-note">Run update_5_info_schedule.sql in Supabase to see message stats.</p>
+      ) : (
+        <>
+          <div className="stat-total">
+            <b>{n('total')}</b>
+            <span>messages in total</span>
+            {stats?.first_at && <small>Chatting since {new Date(stats.first_at).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })} · {n('days')} days talked</small>}
+          </div>
+          <div className="stat-split">
+            <div className="stat-bar"><i style={{ width: `${(mine / total) * 100}%` }} /></div>
+            <div className="stat-legend">
+              <span><i className="dot-me" /> You ({me.name}): <b>{n('mine')}</b></span>
+              <span><i className="dot-them" /> {friend.name}: <b>{n('theirs')}</b></span>
+            </div>
+          </div>
+          <div className="stat-grid">
+            <div><b>{n('photos')}</b><small>📷 Photos</small></div>
+            <div><b>{n('videos')}</b><small>🎥 Videos</small></div>
+            <div><b>{n('voice')}</b><small>🎤 Voice notes</small></div>
+            <div><b>{n('stickers')}</b><small>💟 Stickers</small></div>
+          </div>
+        </>
+      )}
+
+      <div className="profile-actions">
+        <button onClick={onMedia}>🖼️ Media, photos &amp; videos <span className="chev">›</span></button>
+        <button onClick={onStarred}>⭐ Starred messages <span className="chev">›</span></button>
+        <button onClick={onSearch}>🔍 Search in chat <span className="chev">›</span></button>
+        <button onClick={onDisappear}>⏳ Disappearing messages <span className="sheet-side">{disappear}</span></button>
+      </div>
+    </div>
   )
 }

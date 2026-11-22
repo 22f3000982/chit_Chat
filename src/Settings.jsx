@@ -4,8 +4,9 @@ import { logout, needsHomeScreen } from './push'
 import { initials, compressImage } from './utils'
 import { Back } from './icons'
 import { setLocal, sha256, useLocal, WALL_COLORS, wallpaperStyle } from './local'
+import StorageSheet from './Storage'
 
-export default function Settings({ me, onClose, onChange, flash, hasLock, onChangeLockCode, push, onPushOn, onPushOff }) {
+export default function Settings({ me, friends = [], onClose, onChange, flash, hasLock, onChangeLockCode, push, onPushOn, onPushOff }) {
   const [pass, setPass] = useState('')
   const [saving, setSaving] = useState(false)
   const [theme, setTheme] = useLocal('theme', 'light')
@@ -14,6 +15,7 @@ export default function Settings({ me, onClose, onChange, flash, hasLock, onChan
   const [speechLang, setSpeechLang] = useLocal('speechLang', 'hi-IN')
   const [wallOpen, setWallOpen] = useState(false)
   const [pinDialog, setPinDialog] = useState(false)
+  const [storageOpen, setStorageOpen] = useState(false)
 
   async function changePassword() {
     if (pass.length < 6) return flash('Password must be at least 6 characters')
@@ -132,6 +134,12 @@ export default function Settings({ me, onClose, onChange, flash, hasLock, onChan
         </div>
       </div>
 
+      <h3>Storage</h3>
+      <button className="setting as-btn" onClick={() => setStorageOpen(true)}>
+        <div><b>📊 Storage used</b><small>See how much of the free 1 GB is used, and delete big files</small></div>
+        <span className="chev">›</span>
+      </button>
+
       <h3>Security</h3>
       <div className="setting">
         <input className="pin-field" type="password" autoCapitalize="none" placeholder="New password (min 6)" value={pass} onChange={(e) => setPass(e.target.value)} />
@@ -142,6 +150,7 @@ export default function Settings({ me, onClose, onChange, flash, hasLock, onChan
 
       {wallOpen && <WallpaperPicker onClose={() => setWallOpen(false)} flash={flash} />}
       {pinDialog && <AppPinDialog onClose={() => setPinDialog(false)} flash={flash} />}
+      {storageOpen && <StorageSheet me={me} friends={friends} onClose={() => setStorageOpen(false)} flash={flash} />}
     </aside>
   )
 }

@@ -3,6 +3,7 @@ import { signedUrl, timeOf } from './utils'
 import { Ban, Down, Play, Ticks } from './icons'
 import { VoicePlayer, fmtDur } from './Voice'
 import { StickerArt } from './Stickers'
+import { Rich, stripFormat } from './format'
 
 // Right-click on desktop, long-press on phone
 export function useLongPress(onLong) {
@@ -91,6 +92,7 @@ export default function Bubble({
   const meta = (
     <span className="meta">
       {starred && <span className="star" title="Starred">★</span>}
+      {m.meta?.scheduled && <span className="edited" title="Scheduled message">⏰</span>}
       {m.edited_at && !m.deleted_for_everyone && <span className="edited">Edited</span>}
       {timeOf(m.created_at)}
       {mine && !m.deleted_for_everyone && <Ticks status={status} />}
@@ -140,7 +142,7 @@ export default function Bubble({
         ) : isMedia ? (
           <Media m={m} onOpen={onOpen} onLoad={onMediaLoad} />
         ) : null}
-        {m.content && <span className="text"><Linkify text={m.content} /></span>}
+        {m.content && <span className="text"><Rich text={m.content} /></span>}
         {meta}
         {status === 'failed' && <button className="retry" onClick={onRetry}>Not sent. Tap to retry</button>}
         {reacts.length > 0 && (
@@ -219,5 +221,55 @@ export function previewOf(m) {
   if (m.media_type === 'sticker') return '💟 Sticker'
   const tag = m.media_type === 'image' ? '📷' : m.media_type === 'video' ? '🎥' : ''
   if (tag && !m.content) return `${tag} ${m.media_type === 'image' ? 'Photo' : 'Video'}`
-  return [tag, m.content].filter(Boolean).join(' ')
+  return [tag, stripFormat(m.content || '')].filter(Boolean).join(' ')
 }
+
+// Several photos/videos sent together → one grid bubble (like WhatsApp albums)
+export function AlbumBubble({ msgs, mine, first, status, starredIds, highlight, onOpen, onMenu, onMediaLoad }) {
+  const last = msgs[msgs.length - 1]
+  const shown = msgs.slice(0, 4)
+  const extra = msgs.length - 4
+  const reacts = msgs.flatMap((m) => Object.values(m.reactions || {}))
+  const uniq = [...new Set(reacts)]
+  return (
+    <div id={'m-' + last.id} className={`row ${mine ? 'mine' : 'theirs'}${first ? ' first' : ''}${highlight ? ' hit' : ''}${reacts.length ? ' has-reacts' : ''}`}>
+      {msgs.slice(0, -1).map((m) => <span key={m.id} id={'m-' + m.id} className="anchor" />)}
+      <div className="bubble has-media album-bubble">
+        <div className={'album n' + Math.min(msgs.length, 4)}>
+          {shown.map((m, i) => (
+            <AlbumTile key={m.id} m={m} onOpen={() => onOpen(i)} onMenu={() => onMenu(m)} onLoad={onMediaLoad} more={i === 3 && extra > 0 ? extra : 0} />
+          ))}
+        </div>
+        <span className="meta">
+          {msgs.some((m) => starredIds?.has(m.id)) && <span className="star">★</span>}
+          {timeOf(last.created_at)}
+          {mine && <Ticks status={status} />}
+        </span>
+        {reacts.length > 0 && <span className="reacts static">{uniq.join('')}{reacts.length > 1 && <span>{reacts.length}</span>}</span>}
+      </div>
+    </div>
+  )
+}
+
+function AlbumTile({ m, onOpen, onMenu, onLoad, more }) {
+  const [url, err] = useFileUrl(m)
+  const lp = useLongPress(onMenu)
+  const uploading = m._status === 'sending'
+  return (
+    <div className="album-tile" onClick={() => !uploading && url && onOpen()} {...lp}>
+      {err ? <div className="media-missing">✕</div> : !url ? <div className="spinner small" /> : m.media_type === 'image' ? (
+        <img src={url} alt="" onLoad={onLoad} />
+      ) : (
+        <>
+          <video src={url + (m._localUrl ? '' : '#t=0.1')} preload="metadata" muted playsInline />
+          <span className="play"><Play /></span>
+        </>
+      )}
+      {uploading && <div className="media-uploading"><div className="spinner small" /></div>}
+      {more > 0 && <div className="album-more">+{more}</div>}
+    </div>
+  )
+}
+
+export const isAlbumable = (m) =>
+  (m.media_type === 'image' || m.media_type === 'video') && !m.view_once && !m.content && !m.deleted_for_everyone && !m.reply_to
