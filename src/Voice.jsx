@@ -148,37 +148,54 @@ export function VoicePlayer({ src, duration, mine }) {
 }
 
 // ---------- speak-to-type (speech recognition) ----------
-export function useDictation(lang, onText) {
+// onStart() → returns the text already in the box; onUpdate(fullText) is called live while speaking.
+export function useDictation(lang, { onStart, onUpdate }) {
   const Rec = typeof window !== 'undefined' ? window.SpeechRecognition || window.webkitSpeechRecognition : null
   const [listening, setListening] = useState(false)
   const rec = useRef(null)
-  const cb = useRef(onText)
-  cb.current = onText
+  const base = useRef('')
+  const cbs = useRef({ onStart, onUpdate })
+  cbs.current = { onStart, onUpdate }
 
   function start() {
-    if (!Rec) return
+    if (!Rec || rec.current) return false
+    const before = cbs.current.onStart?.() || ''
+    base.current = before && !/\s$/.test(before) ? before + ' ' : before
     const r = new Rec()
     r.lang = lang
     r.continuous = true
-    r.interimResults = false
+    r.interimResults = true // show words on screen while speaking
     r.onresult = (e) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) cb.current(e.results[i][0].transcript.trim())
-      }
+      let said = ''
+      for (let i = 0; i < e.results.length; i++) said += e.results[i][0].transcript
+      cbs.current.onUpdate?.(base.current + said.replace(/\s+/g, ' ').trimStart())
     }
-    r.onend = () => setListening(false)
-    r.onerror = () => setListening(false)
+    const end = () => { rec.current = null; setListening(false) }
+    r.onend = end
+    r.onerror = end
     rec.current = r
-    r.start()
+    try { r.start() } catch { end(); return false }
     setListening(true)
+    return true
   }
 
+  // stop listening, keep what is on screen
   function stop() {
     rec.current?.stop()
+    rec.current = null
     setListening(false)
+  }
+
+  // stop and throw away what was said
+  function cancel() {
+    const r = rec.current
+    rec.current = null
+    if (r) { r.onresult = null; r.abort?.() }
+    setListening(false)
+    cbs.current.onUpdate?.(base.current.trimEnd())
   }
 
   useEffect(() => () => rec.current?.abort?.(), [])
 
-  return { supported: !!Rec, listening, toggle: () => (listening ? stop() : start()), stop }
+  return { supported: !!Rec, listening, start, stop, cancel, toggle: () => (rec.current ? stop() : start()) }
 }

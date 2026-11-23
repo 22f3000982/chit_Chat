@@ -88,9 +88,29 @@ export default function Chat({
   const pendingJump = useRef(null)
 
   const recorder = useRecorder()
-  const dictation = useDictation(speechLang, (t) => {
-    setText((prev) => (prev && !prev.endsWith(' ') ? prev + ' ' : prev) + t)
-    sendTyping(fid)
+  const dictation = useDictation(speechLang, {
+    onStart: () => textRef.current?.value || '',
+    onUpdate: (full) => {
+      setText(full)
+      sendTyping(fid)
+      const el = textRef.current
+      if (el) requestAnimationFrame(() => { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 130) + 'px'; el.scrollTop = el.scrollHeight })
+    },
+  })
+
+  // Ctrl+M anywhere in the chat: start / stop voice typing
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'm')) return
+      e.preventDefault()
+      if (!dictation.supported) return flash('Voice typing works in Chrome or Edge')
+      if (editing || recorder.recording) return
+      textRef.current?.focus()
+      if (dictation.listening) dictation.stop()
+      else if (dictation.start()) flash('🎙️ Listening… press Enter when done')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   })
 
   // ---------- drafts: keep the unsent message for this chat ----------
@@ -829,7 +849,7 @@ export default function Chat({
               <textarea
                 ref={textRef}
                 rows={1}
-                placeholder={dictation.listening ? 'Listening… speak now' : 'Message'}
+                placeholder={dictation.listening ? '🎙️ Listening… speak, then press Enter' : ('ontouchstart' in window ? 'Message' : 'Message  (Ctrl+M to speak)')}
                 value={text}
                 onChange={(e) => {
                   setText(e.target.value)
@@ -841,6 +861,9 @@ export default function Chat({
                 onSelect={checkSel}
                 onBlur={() => setTimeout(() => setHasSel(false), 150)}
                 onKeyDown={(e) => {
+                  // while voice typing: Enter = stop & keep the text (press Enter again to send), Esc = cancel
+                  if (dictation.listening && e.key === 'Enter') { e.preventDefault(); return dictation.stop() }
+                  if (dictation.listening && e.key === 'Escape') { e.preventDefault(); return dictation.cancel() }
                   if (e.key === 'Escape' && editing) return cancelEdit()
                   const k = e.key.toLowerCase()
                   if ((e.ctrlKey || e.metaKey) && !e.altKey) {
@@ -852,7 +875,7 @@ export default function Chat({
                 }}
               />
               {dictation.supported && (
-                <button className={'icon-btn dark speak' + (dictation.listening ? ' on' : '')} onClick={dictation.toggle} aria-label={dictation.listening ? 'Stop voice typing' : 'Voice typing'} title="Speak to type">🗣️</button>
+                <button className={'icon-btn dark speak' + (dictation.listening ? ' on' : '')} onClick={dictation.toggle} aria-label={dictation.listening ? 'Stop voice typing' : 'Voice typing'} title="Speak to type (Ctrl+M)">🗣️</button>
               )}
               {!editing && <button className="icon-btn dark" onClick={() => fileInput.current?.click()} aria-label="Attach photo or video"><Clip /></button>}
               <input ref={fileInput} type="file" accept="image/*,video/*" multiple hidden onChange={pickFile} />
