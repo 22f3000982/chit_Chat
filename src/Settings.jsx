@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { supabase } from './supabase'
-import { logout, needsHomeScreen } from './push'
+import { diagnosePush, logout, needsHomeScreen } from './push'
 import { initials, compressImage } from './utils'
 import { Back } from './icons'
 import { setLocal, sha256, useLocal, WALL_COLORS, wallpaperStyle } from './local'
@@ -18,6 +18,18 @@ export default function Settings({ me, friends = [], onClose, onChange, flash, h
   const [pinDialog, setPinDialog] = useState(false)
   const [storageOpen, setStorageOpen] = useState(false)
   const [photoBusy, setPhotoBusy] = useState(false)
+  const [check, setCheck] = useState(null) // null | 'running' | steps[]
+
+  async function runCheck() {
+    setCheck('running')
+    try {
+      const steps = await diagnosePush(me.id)
+      setCheck(steps)
+      if (steps.every((x) => x.ok)) onPushOn?.(true)
+    } catch (e) {
+      setCheck([{ label: 'Check', ok: false, detail: e.message, fix: 'Try again.' }])
+    }
+  }
 
   async function changePhoto(e) {
     const file = e.target.files?.[0]
@@ -93,6 +105,33 @@ export default function Settings({ me, friends = [], onClose, onChange, flash, h
           onChange={(e) => (e.target.checked ? onPushOn() : onPushOff())}
         />
       </label>
+
+      <div className="setting check-row">
+        <button className="primary small" onClick={runCheck} disabled={check === 'running'}>
+          {check === 'running' ? 'Checking…' : '🔍 Check notifications'}
+        </button>
+        <small>Checks every step and sends you a test notification.</small>
+      </div>
+      {Array.isArray(check) && (
+        <div className="check-list">
+          {check.map((st) => (
+            <div key={st.label} className={'check-item' + (st.ok ? ' ok' : ' bad')}>
+              <span className="check-ico">{st.ok ? '✅' : '❌'}</span>
+              <div>
+                <b>{st.label}</b>
+                <small>{st.detail}</small>
+                {!st.ok && st.fix && <small className="check-fix">👉 {st.fix}</small>}
+              </div>
+            </div>
+          ))}
+          {check.every((x) => x.ok) && (
+            <p className="check-note">
+              All good. If the test popup still didn't show on your phone: turn off Battery saver / Data saver for Chrome,
+              check Do Not Disturb, and in phone Settings → Apps → Chrome → Notifications make sure they're on.
+            </p>
+          )}
+        </div>
+      )}
 
       <h3>Appearance</h3>
       <div className="setting">

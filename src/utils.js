@@ -88,6 +88,43 @@ export function playPop() {
   }
 }
 
+// Louder two-note chime for a new message when you're not looking at the app
+export function playChime() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)()
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+    const t0 = audioCtx.currentTime
+    ;[[988, 0], [1319, 0.14], [988, 0.42], [1319, 0.56]].forEach(([f, at]) => {
+      const o = audioCtx.createOscillator()
+      const g = audioCtx.createGain()
+      o.type = 'triangle'
+      o.frequency.setValueAtTime(f, t0 + at)
+      g.gain.setValueAtTime(0.0001, t0 + at)
+      g.gain.exponentialRampToValueAtTime(0.4, t0 + at + 0.02)
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.25)
+      o.connect(g).connect(audioCtx.destination)
+      o.start(t0 + at)
+      o.stop(t0 + at + 0.27)
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
+// browsers only allow sound after the first tap/key press on the page
+if (typeof window !== 'undefined') {
+  const unlock = () => {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)()
+      audioCtx.resume()
+    } catch { /* ignore */ }
+    window.removeEventListener('pointerdown', unlock)
+    window.removeEventListener('keydown', unlock)
+  }
+  window.addEventListener('pointerdown', unlock)
+  window.addEventListener('keydown', unlock)
+}
+
 export const EMOJIS =
   '😀 😂 🤣 😊 😍 🥰 😘 😜 🤔 😎 😭 😢 😡 😴 🥺 😅 🙈 🙏 👍 👎 👏 🙌 💪 🤝 ❤️ 🧡 💛 💚 💙 💜 🖤 💔 🔥 ✨ 🎉 🎂 🌹 ☕ 🍕 ✅ ❌ 💯 😇 🤗 😏 🤭 😬 🥳'.split(
     ' '

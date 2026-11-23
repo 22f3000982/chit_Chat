@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './supabase'
-import { dayLabel, initials, playPop, timeOf } from './utils'
+import { dayLabel, initials, playChime, playPop, timeOf } from './utils'
 import { Back, Dots, Ticks } from './icons'
 import Chat from './Chat'
 import Avatar from './Avatar'
@@ -57,7 +57,8 @@ export default function Home({ session, appLocked }) {
   openRef.current = openId
 
   // ---------- phone notifications ----------
-  const [push, setPush] = useState('unknown')
+  const [push, setPushRaw] = useState('unknown')
+  const setPush = (v) => { pushRef.current = v; setPushRaw(v) }
   const [pushDismissed, setPushDismissed] = useLocal('pushBannerDismissed', false)
   useEffect(() => {
     pushState().then((st) => {
@@ -66,7 +67,8 @@ export default function Home({ session, appLocked }) {
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') enablePush(myId).then(() => setPush('on')).catch(() => {})
     })
   }, [myId])
-  const turnOnPush = async () => {
+  const turnOnPush = async (alreadyDone) => {
+    if (alreadyDone === true) return setPush('on')
     try {
       await enablePush(myId)
       setPush('on')
@@ -135,11 +137,7 @@ export default function Home({ session, appLocked }) {
       .channel('db-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, ({ eventType, new: m }) => {
         if (eventType === 'DELETE' || !m?.id) return
-        if (eventType === 'INSERT' && m.receiver_id === myId && document.visibilityState !== 'visible') {
-          unread.current += 1
-          document.title = `(${unread.current}) Chit Chat`
-          playPop()
-        }
+        if (eventType === 'INSERT' && m.receiver_id === myId) alertRef.current?.(m)
         setMessages((prev) => mergeMessages(prev, [m]))
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, ({ new: p }) => {
@@ -149,6 +147,53 @@ export default function Home({ session, appLocked }) {
       .subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [myId, mergeMessages])
+
+  // ---------- alert for a new message: chime, blinking tab title, popup ----------
+  const alertRef = useRef(null)
+  const blinkTimer = useRef(null)
+  const pushRef = useRef('unknown')
+  const stopBlink = useCallback(() => {
+    clearInterval(blinkTimer.current)
+    blinkTimer.current = null
+    unread.current = 0
+    document.title = 'Chit Chat'
+  }, [])
+  alertRef.current = (m) => {
+    const away = document.visibilityState !== 'visible' || !document.hasFocus()
+    if (!away) {
+      if (openRef.current !== m.sender_id) playPop() // looking at the app, but another screen
+      return
+    }
+    const sender = friendsRef.current.find((f) => f.id === m.sender_id)
+    const p = prefsRef.current[m.sender_id]
+    const secret = p?.locked || p?.hidden
+    const name = secret ? 'Chit Chat' : sender?.name || 'New message'
+    const body = secret ? 'New message' : previewOf(m) || 'New message'
+    unread.current += 1
+    playChime()
+    navigator.vibrate?.([120, 60, 120])
+    // blink the tab title so it's easy to spot
+    clearInterval(blinkTimer.current)
+    let on = false
+    const a = `(${unread.current}) Chit Chat`
+    const b = secret ? '💬 New message' : `💬 ${sender?.name || 'New'} messaged you`
+    document.title = b
+    blinkTimer.current = setInterval(() => { on = !on; document.title = on ? a : b }, 1000)
+    // popup from the page itself when phone-style push isn't on for this device
+    if (pushRef.current !== 'on' && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      navigator.serviceWorker?.getRegistration().then((reg) => {
+        const opts = { body, icon: '/icon-192.png', badge: '/badge-96.png', tag: secret ? 'chitchat-private' : `chat-${m.sender_id}`, renotify: true }
+        if (reg) reg.showNotification(name, opts)
+        else new Notification(name, opts)
+      }).catch(() => {})
+    }
+  }
+  useEffect(() => {
+    const back = () => { if (document.visibilityState === 'visible' && document.hasFocus()) stopBlink() }
+    window.addEventListener('focus', back)
+    document.addEventListener('visibilitychange', back)
+    return () => { window.removeEventListener('focus', back); document.removeEventListener('visibilitychange', back); stopBlink() }
+  }, [stopBlink])
 
   // ---------- presence (online) + typing ----------
   useEffect(() => {
@@ -192,8 +237,6 @@ export default function Home({ session, appLocked }) {
       setVisible(v)
       touchLastSeen()
       if (v) {
-        unread.current = 0
-        document.title = 'Chit Chat'
         roomRef.current?.track({ at: Date.now() })
         const { all } = await fetchLatest(friendsRef.current)
         setMessages((prev) => mergeMessages(prev, all))
